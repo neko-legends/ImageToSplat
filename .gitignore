@@ -9,6 +9,7 @@ __pycache__/
 # Distribution / packaging
 .Python
 build/
+release/
 develop-eggs/
 dist/
 downloads/
@@ -26,11 +27,29 @@ share/python-wheels/
 *.egg
 MANIFEST
 
+# Local model weights and generated app output
+ckpts/
+gradio_outputs/
+triposplat-weights-metadata/
+*.safetensors
+
+# Frontend workspace
+node_modules/
+.npm-cache/
+web-dist/
+
 # PyInstaller
 #   Usually these files are written by a python script from a template
 #   before PyInstaller builds the exe, so as to inject date/other infos into it.
+*.exe
+*.msi
+*.dmg
+*.zip
+*.7z
+*.tar.gz
 *.manifest
 *.spec
+!NekoSplatForge.spec
 
 # Installer logs
 pip-log.txt

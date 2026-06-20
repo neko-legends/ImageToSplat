@@ -51,12 +51,92 @@ viewer — e.g. [SparkJS](https://sparkjs.dev) or
 [SuperSplat](https://superspl.at/editor).
 
 
-## Gradio Demo
+## Neko Legends Gradio App
 
 ```bash
 pip install gradio
 python run_gradio.py
 ```
+
+If port `7860` is already in use, set `TRIPOSPLAT_PORT` before launching.
+
+The local app provides an image uploader, sampling controls, a Spark.js 3D
+Gaussian splat viewer, first-launch Setup popup for downloading the expected
+TripoSplat `.safetensors` files, and export buttons for:
+
+- Native Gaussian splat formats: `.ply`, `.splat`
+- Common point-cloud conversions: `.glb`, glTF `.zip`, `.obj`, `.fbx`
+
+Note: TripoSplat generates Gaussian splats rather than a polygon mesh. The
+`.ply` and `.splat` files preserve the native result; glTF/GLB/OBJ/FBX exports
+store the splat centers and colors as point-cloud assets for broader 3D-tool
+compatibility.
+
+## AI Agent Control and Headless Mode
+
+ImageToSplat now has suite-style local AI Agent Control. It is off by default,
+binds to `127.0.0.1`, defaults to port `17340`, and registers itself in
+`%APPDATA%\NekoLegends\agent-api-registry.json` when enabled. Use the
+`AI Agent Control` accordion in the app, or start it from the command line:
+
+```powershell
+python run_gradio.py --agent-api --no-browser
+```
+
+Run only the API, without the Gradio UI:
+
+```powershell
+python run_gradio.py --serve-agent-api
+```
+
+Run one headless generation job and print JSON output:
+
+```powershell
+python run_gradio.py --headless D:\images\chair.png --output-dir D:\splats --output-name chair --num-gaussians 65536
+```
+
+Useful environment variables:
+
+- `TRIPOSPLAT_AGENT_API=1` starts the Agent API beside the UI.
+- `TRIPOSPLAT_AGENT_API_PORT=17340` overrides the API port.
+- `TRIPOSPLAT_HEADLESS=1` enables headless mode.
+- `TRIPOSPLAT_OPEN_BROWSER=0` keeps the Gradio UI from opening a browser.
+
+Agent API endpoints:
+
+- `GET /health`
+- `GET /openapi.json`
+- `GET /status`
+- `GET /models`
+- `POST /setup`
+- `POST /generate`
+
+Example generation request:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:17340/generate -ContentType 'application/json' -Body (@{
+  imagePath = 'D:\images\chair.png'
+  outputDir = 'D:\splats'
+  outputName = 'chair'
+  seed = 42
+  steps = 20
+  guidanceScale = 3.0
+  numGaussians = 262144
+} | ConvertTo-Json -Depth 4)
+```
+
+`POST /generate` returns a `jobId`; poll `GET /status` for progress and final
+export paths.
+
+## Portable Windows Build
+
+```powershell
+.\Build-Portable.ps1
+```
+
+The build output is published to `release\portable\NekoSplatForge\NekoSplatForge.exe`.
+The app launches first; use the Setup popup to download the TripoSplat model
+files into the portable `ckpts` folder before generating.
 
 ## License
 TripoSplat code and weight models are released under the [MIT License](https://github.com/VAST-AI-Research/TripoSplat/blob/main/LICENSE).
