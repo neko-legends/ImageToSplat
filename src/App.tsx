@@ -3,6 +3,7 @@ import {
   Activity,
   Box,
   CheckCircle2,
+  Clapperboard,
   Download,
   FolderOpen,
   Image as ImageIcon,
@@ -41,8 +42,22 @@ type AgentJob = {
   message?: string
   progress?: number
   error?: string
-  result?: GenerationResult | SetupResult
+  result?: GenerationResult | SetupResult | SceneResult
 }
+
+type SceneResult = {
+  spz: string
+  cameras: string
+  videos: string[]
+  sfm: { frames: number; registered: number; points: number; reprojectionError: number }
+  splats: number
+  sizeBytes: number
+  heldOutPsnr: number | null
+  seconds: number
+}
+
+type Mode = 'image' | 'scene'
+type CaptureSource = 'videos' | 'image' | 'prompt'
 
 type ModelStatus = {
   ready: boolean
@@ -94,6 +109,10 @@ function isGenerationResult(result: AgentJob['result']): result is GenerationRes
   return Boolean(result && 'paths' in result)
 }
 
+function isSceneResult(result: AgentJob['result']): result is SceneResult {
+  return Boolean(result && 'spz' in result)
+}
+
 export default function App() {
   const [port, setPort] = useState(DEFAULT_PORT)
   const [apiUrl, setApiUrl] = useState(`http://127.0.0.1:${DEFAULT_PORT}`)
@@ -109,12 +128,22 @@ export default function App() {
   const [polling, setPolling] = useState(false)
   const [viewerSrc, setViewerSrc] = useState('')
   const [preparedSrc, setPreparedSrc] = useState('')
+  const [mode, setMode] = useState<Mode>('image')
+  const [captureSource, setCaptureSource] = useState<CaptureSource>('videos')
+  const [videoPaths, setVideoPaths] = useState<string[]>([])
+  const [roomImage, setRoomImage] = useState('')
+  const [roomPrompt, setRoomPrompt] = useState('')
+  const [captureMode, setCaptureMode] = useState<'first-last' | 'reference'>('first-last')
+  const [veniceToken, setVeniceToken] = useState('')
+  const [maxSplats, setMaxSplats] = useState(600000)
+  const [sceneSteps, setSceneSteps] = useState(20000)
   const hasBooted = useRef(false)
   const tauri = isTauriRuntime()
 
   const activeJob = status?.activeJob
   const lastJob = status?.lastJob
   const generation = isGenerationResult(lastJob?.result) ? lastJob.result : null
+  const sceneResult = isSceneResult(lastJob?.result) ? lastJob.result : null
   const modelReady = Boolean(status?.models?.ready)
   const busy = Boolean(status?.busy)
   const progress = Math.round(((activeJob?.progress ?? (busy ? 0 : 0)) || 0) * 100)
@@ -192,7 +221,70 @@ export default function App() {
     }
   }
 
-  async function postJob(path: '/setup' | '/generate', body: Record<string, unknown>) {
+  async function chooseVideos() {
+    if (!tauri) {
+      setMessage('Desktop file picker is available in the Tauri app')
+      return
+    }
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog')
+      const selected = await open({
+        multiple: true,
+        directory: false,
+        filters: [{ name: 'Videos', extensions: ['mp4', 'mov', 'webm', 'mkv', 'avi'] }],
+      })
+      if (Array.isArray(selected)) setVideoPaths(selected)
+      else if (typeof selected === 'string') setVideoPaths([selected])
+    } catch (error) {
+      setMessage(`Could not pick videos: ${formatError(error)}`)
+    }
+  }
+
+  async function chooseRoomImage() {
+    if (!tauri) {
+      setMessage('Desktop file picker is available in the Tauri app')
+      return
+    }
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog')
+      const selected = await open({
+        multiple: false,
+        directory: false,
+        filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
+      })
+      if (typeof selected === 'string') setRoomImage(selected)
+    } catch (error) {
+      setMessage(`Could not pick image: ${formatError(error)}`)
+    }
+  }
+
+  async function runScene() {
+    const body: Record<string, unknown> = {
+      outputDir: outputDir.trim() || undefined,
+      outputName: outputName.trim() || undefined,
+      maxSplats,
+      steps: sceneSteps,
+    }
+    if (captureSource === 'videos') {
+      if (!videoPaths.length) return setMessage('Choose one or more videos of the scene first')
+      body.videoPaths = videoPaths
+    } else {
+      if (captureSource === 'image' && !roomImage.trim()) return setMessage('Choose a room image first')
+      if (captureSource === 'prompt' && !roomPrompt.trim()) return setMessage('Describe the room first')
+      if (captureSource === 'image') body.imagePath = roomImage.trim()
+      else body.prompt = roomPrompt.trim()
+      body.captureMode = captureMode
+      body.captureDuration = captureMode === 'first-last' ? '5s' : '15s'
+      if (veniceToken.trim()) body.venice = { token: veniceToken.trim() }
+    }
+    try {
+      await postJob('/generate-scene', body)
+    } catch (error) {
+      setMessage(`Scene failed: ${formatError(error)}`)
+    }
+  }
+
+  async function postJob(path: '/setup' | '/generate' | '/generate-scene', body: Record<string, unknown>) {
     const response = await fetch(`${apiUrl}${path}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -274,6 +366,15 @@ export default function App() {
 
   useEffect(() => {
     async function updatePreview() {
+      if (tauri && sceneResult) {
+        const { convertFileSrc } = await import('@tauri-apps/api/core')
+        setPreparedSrc('')
+        setViewerSrc(
+          `/viewer/viewer.html?ply=${encodeURIComponent(convertFileSrc(sceneResult.spz))}` +
+            `&cams=${encodeURIComponent(convertFileSrc(sceneResult.cameras))}&ts=${Date.now()}`,
+        )
+        return
+      }
       if (!tauri || !generation?.paths) {
         setViewerSrc('')
         setPreparedSrc('')
@@ -286,7 +387,7 @@ export default function App() {
       setViewerSrc(ply ? `/viewer/viewer.html?ply=${encodeURIComponent(convertFileSrc(ply))}&ts=${Date.now()}` : '')
     }
     updatePreview().catch((error) => setMessage(`Preview failed: ${formatError(error)}`))
-  }, [generation, tauri])
+  }, [generation, sceneResult, tauri])
 
   return (
     <div className="app-shell">
@@ -328,6 +429,123 @@ export default function App() {
           </button>
         </section>
 
+        <div className="mode-switch">
+          <button type="button" className={mode === 'image' ? 'active' : ''} onClick={() => setMode('image')}>
+            <ImageIcon size={15} />
+            Single image
+          </button>
+          <button type="button" className={mode === 'scene' ? 'active' : ''} onClick={() => setMode('scene')}>
+            <Clapperboard size={15} />
+            Room / scene
+          </button>
+        </div>
+
+        {mode === 'scene' && (
+          <section className="section">
+            <div className="section-title">
+              <Clapperboard size={14} />
+              Scene source
+            </div>
+            <label className="field">
+              <span>From</span>
+              <select value={captureSource} onChange={(event) => setCaptureSource(event.target.value as CaptureSource)}>
+                <option value="videos">My videos</option>
+                <option value="image">Room image + Venice</option>
+                <option value="prompt">Room prompt + Venice</option>
+              </select>
+            </label>
+            {captureSource === 'videos' && (
+              <>
+                <button type="button" onClick={chooseVideos}>
+                  <FolderOpen size={15} />
+                  Choose videos
+                </button>
+                <div className="status-copy">
+                  {videoPaths.length ? videoPaths.map(fileName).join(', ') : 'Clips of one still scene; several clips are joined'}
+                </div>
+              </>
+            )}
+            {captureSource === 'image' && (
+              <>
+                <button type="button" onClick={chooseRoomImage}>
+                  <FolderOpen size={15} />
+                  Choose room image
+                </button>
+                <input
+                  className="path-input"
+                  value={roomImage}
+                  placeholder="Room image path"
+                  onChange={(event) => setRoomImage(event.target.value)}
+                />
+              </>
+            )}
+            {captureSource === 'prompt' && (
+              <textarea
+                className="path-input"
+                rows={4}
+                value={roomPrompt}
+                placeholder="Cozy Tokyo apartment with a green sofa, bookshelf and open kitchen"
+                onChange={(event) => setRoomPrompt(event.target.value)}
+              />
+            )}
+            {captureSource !== 'videos' && (
+              <>
+                <label className="field">
+                  <span>Video</span>
+                  <select value={captureMode} onChange={(event) => setCaptureMode(event.target.value as 'first-last' | 'reference')}>
+                    <option value="first-last">Flux 3 view-to-view</option>
+                    <option value="reference">Seedance 2.5 one spin</option>
+                  </select>
+                </label>
+                <label className="field compact">
+                  <span>Venice token</span>
+                  <input
+                    type="password"
+                    value={veniceToken}
+                    placeholder="Agent Control token"
+                    onChange={(event) => setVeniceToken(event.target.value)}
+                  />
+                </label>
+              </>
+            )}
+            <label className="field">
+              <span>Max splats</span>
+              <select value={maxSplats} onChange={(event) => setMaxSplats(Number(event.target.value))}>
+                <option value={300000}>300k (~4 MB)</option>
+                <option value={600000}>600k (~8 MB)</option>
+                <option value={1000000}>1M (~13 MB)</option>
+              </select>
+            </label>
+            <label className="field">
+              <span>Training</span>
+              <select value={sceneSteps} onChange={(event) => setSceneSteps(Number(event.target.value))}>
+                <option value={7000}>Quick</option>
+                <option value={20000}>Standard</option>
+                <option value={30000}>Best</option>
+              </select>
+            </label>
+            <label className="field compact">
+              <span>Name</span>
+              <input value={outputName} placeholder="Auto" onChange={(event) => setOutputName(event.target.value)} />
+            </label>
+            <button type="button" onClick={chooseOutputDir}>
+              <FolderOpen size={15} />
+              Output folder
+            </button>
+            <input
+              className="path-input"
+              value={outputDir}
+              placeholder={status?.outputRoot ? `${status.outputRoot}/scenes` : 'Default output folder'}
+              onChange={(event) => setOutputDir(event.target.value)}
+            />
+            <button type="button" className="primary action" disabled={busy || !status} onClick={runScene}>
+              <Wand2 size={16} />
+              Build scene
+            </button>
+          </section>
+        )}
+
+        {mode === 'image' && (
         <section className="section">
           <div className="section-title">
             <ImageIcon size={14} />
@@ -351,7 +569,9 @@ export default function App() {
             ))}
           </div>
         </section>
+        )}
 
+        {mode === 'image' && (
         <section className="section">
           <div className="section-title">
             <Settings size={14} />
@@ -406,13 +626,20 @@ export default function App() {
             Generate splat
           </button>
         </section>
+        )}
       </aside>
 
       <main className="workspace">
         <section className="hero-band">
           <div>
-            <h2>Single image to Gaussian splat</h2>
-            <p>{selectedImage ? fileName(selectedImage) : 'No image selected'}</p>
+            <h2>{mode === 'scene' ? 'Room or scene to walkable splat' : 'Single image to Gaussian splat'}</h2>
+            <p>
+              {mode === 'scene'
+                ? 'Videos (or Venice-made walkthroughs) become a compressed .spz you can walk through in three.js'
+                : selectedImage
+                  ? fileName(selectedImage)
+                  : 'No image selected'}
+            </p>
           </div>
           <div className="job-meter">
             <span>{activeJob?.action || lastJob?.action || 'idle'}</span>
@@ -433,7 +660,7 @@ export default function App() {
             ) : (
               <div className="empty-preview">
                 <Box size={36} />
-                <span>Preview appears after a PLY export</span>
+                <span>{mode === 'scene' ? 'Walkable preview appears when the scene is built' : 'Preview appears after a PLY export'}</span>
               </div>
             )}
           </div>
@@ -473,7 +700,45 @@ export default function App() {
                 </div>
               </>
             )}
-            {!modelReady && status?.models && (
+            {sceneResult && (
+              <>
+                <dl className="metrics">
+                  <div>
+                    <dt>Splats</dt>
+                    <dd>{sceneResult.splats.toLocaleString()}</dd>
+                  </div>
+                  <div>
+                    <dt>Size</dt>
+                    <dd>{(sceneResult.sizeBytes / 1e6).toFixed(1)} MB</dd>
+                  </div>
+                  <div>
+                    <dt>Frames placed</dt>
+                    <dd>
+                      {sceneResult.sfm.registered}/{sceneResult.sfm.frames}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Quality</dt>
+                    <dd>{sceneResult.heldOutPsnr ? `${sceneResult.heldOutPsnr} dB` : '-'}</dd>
+                  </div>
+                  <div>
+                    <dt>Minutes</dt>
+                    <dd>{(sceneResult.seconds / 60).toFixed(1)}</dd>
+                  </div>
+                </dl>
+                <div className="artifact-grid">
+                  <button type="button" onClick={() => openOutput(sceneResult.spz)}>
+                    <Play size={13} />
+                    SPZ
+                  </button>
+                  <button type="button" onClick={() => openOutput(sceneResult.cameras)}>
+                    <Play size={13} />
+                    CAMERAS
+                  </button>
+                </div>
+              </>
+            )}
+            {mode === 'image' && !modelReady && status?.models && (
               <div className="missing-list">
                 <strong>Missing model files</strong>
                 {status.models.missing.map((item) => (

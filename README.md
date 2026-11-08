@@ -128,6 +128,68 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:17340/generate -ContentType
 `POST /generate` returns a `jobId`; poll `GET /status` for progress and final
 export paths.
 
+## Room / Scene Mode (walkable splats for three.js)
+
+Single-image mode guesses the hidden sides of one object. Scene mode instead rebuilds a **room or any still scene**
+from video, so you can walk through it in three.js:
+
+1. **Video in.** Use your own clips of a still scene (several clips of one room are joined), or let
+   [Venice Media Local](https://github.com/neko-legends/venice-media-local) film it:
+   - give a room image (or a prompt, and `gpt-image-2-6-sunburst` draws it);
+   - Sunburst edit draws the same room from three more directions;
+   - Flux 3 first/last-frame films a fast turn from each view to the next, closing the loop
+     (`captureMode: "first-last"`, default in the GUI), or Seedance 2.5 reference-to-video makes one spin through all
+     views (`captureMode: "reference"`).
+2. **Every clip is inspected** before use (hard cuts, cross-fades, a camera that barely moves). AI video does not
+   always follow the prompt; a Venice clip that fails is filmed again once, and every clip gets a contact sheet in
+   `<name>.clips/`.
+3. **Camera positions** are solved across all clips with COLMAP (pycolmap).
+4. **Splats are trained on the GPU** with gsplat (MCMC, capped splat count, light colour detail), then saved as a
+   compressed **`.spz`** (a room is about 5-15 MB instead of 350-600 MB of `.ply`) plus `<name>.cameras.json`, the
+   filmed camera path in three.js coordinates (y up). The splat is already y-up; load it with Spark
+   (`new SplatMesh({ url: "room.spz" })`) and start the player at `cameras[0]`.
+
+The viewer opens a scene with `viewer.html?ply=<room.spz>&cams=<room.cameras.json>`: drag to look around,
+W/A/S/D to walk, Q/E down/up.
+
+### Scene requirements
+
+Scene work runs in a separate Python worker so the main app does not need these packages:
+
+```bash
+# Python 3.12 environment with CUDA PyTorch for your GPU, then:
+pip install -r requirements-scene.txt
+python -m scene_splat --check      # reports ffmpeg, pycolmap, torch/CUDA, gsplat
+```
+
+gsplat compiles its CUDA kernels on first use, so a CUDA toolkit (`nvcc`) is needed once; the worker finds it via
+`CUDA_HOME`, `nvcc` on `PATH`, `/opt/cuda` or `/usr/local/cuda`. Point the app at that environment with
+`IMAGETOSPLAT_SCENE_PYTHON=/path/to/python`. `IMAGETOSPLAT_FFMPEG` overrides ffmpeg.
+
+Venice capture needs Venice Media Local running with Agent Control on. Pass its Agent Control token in the GUI,
+as `venice.token` in the request, or set `VENICE_MEDIA_LOCAL_TOKEN` (`VENICE_MEDIA_LOCAL_URL` if it is not on
+`http://127.0.0.1:9876`). The Venice API key stays inside Venice Media Local.
+
+Command line:
+
+```bash
+python -m scene_splat --video walk1.mp4 --video walk2.mp4 --out scenes --name living-room
+python -m scene_splat --capture-image room.png --capture-mode first-last --capture-duration 5s --out scenes --name room
+```
+
+Agent API: `GET /scene/check`, then `POST /generate-scene` and poll `GET /status`:
+
+```bash
+curl -X POST http://127.0.0.1:17340/generate-scene -H 'Content-Type: application/json' -d '{
+  "imagePath": "/path/to/room.png", "captureMode": "first-last", "captureDuration": "5s",
+  "venice": {"token": "<Venice Media Local agent token>"},
+  "outputName": "room", "maxSplats": 600000, "steps": 20000 }'
+```
+
+`videoPaths` replaces `imagePath` for your own clips. Other options: `prompt`, `viewPaths` (your own extra views),
+`outputDir`, `fps` (frames taken per second, default 6), `frameWidth`, `steps`, `maxSplats`, `shDegree` (0 or 1),
+`device` (e.g. `cuda:1`), `keepWork`.
+
 ## Portable Windows Build
 
 ```powershell

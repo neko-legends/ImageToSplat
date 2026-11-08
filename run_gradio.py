@@ -899,6 +899,41 @@ def _agent_openapi(port: int) -> dict[str, Any]:
             "/status": {"get": {"summary": "Check active and last job status"}},
             "/models": {"get": {"summary": "Check model setup status"}},
             "/setup": {"post": {"summary": "Download missing TripoSplat model files"}},
+            "/scene/check": {"get": {"summary": "Check scene-mode dependencies (ffmpeg, pycolmap, CUDA torch, gsplat)"}},
+            "/generate-scene": {
+                "post": {
+                    "summary": "Build a walkable splat scene (.spz + camera path) from videos, or have Venice Media "
+                               "Local film a room from an image or prompt first",
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "videoPaths": {"type": "array", "items": {"type": "string"}},
+                                        "imagePath": {"type": "string", "description": "Room image for Venice capture"},
+                                        "prompt": {"type": "string", "description": "Room description for Venice capture"},
+                                        "viewPaths": {"type": "array", "items": {"type": "string"}},
+                                        "captureMode": {"type": "string", "enum": ["reference", "first-last"]},
+                                        "captureDuration": {"type": "string", "example": "15s"},
+                                        "venice": {"type": "object", "properties": {"url": {"type": "string"}, "token": {"type": "string"}}},
+                                        "outputDir": {"type": "string"},
+                                        "outputName": {"type": "string"},
+                                        "fps": {"type": "number"},
+                                        "frameWidth": {"type": "integer"},
+                                        "steps": {"type": "integer"},
+                                        "maxSplats": {"type": "integer"},
+                                        "shDegree": {"type": "integer", "enum": [0, 1]},
+                                        "device": {"type": "string"},
+                                        "keepWork": {"type": "boolean"},
+                                    },
+                                }
+                            }
+                        },
+                    },
+                }
+            },
             "/generate": {
                 "post": {
                     "summary": "Start an image-to-splat generation job",
@@ -1009,6 +1044,108 @@ def _agent_generate_options(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+SCENE_PYTHON_ENV = "IMAGETOSPLAT_SCENE_PYTHON"
+
+
+def _scene_python() -> str:
+    """Python that has the scene dependencies (pycolmap, torch+CUDA, gsplat). Default: this interpreter.
+
+    Only the environment variable can change it, never an API request (the API accepts browser requests).
+    """
+    chosen = os.environ.get(SCENE_PYTHON_ENV)
+    if chosen:
+        return str(Path(chosen).expanduser())
+    if IS_FROZEN:
+        raise RuntimeError(f"Scene mode needs a Python with pycolmap and gsplat: set {SCENE_PYTHON_ENV}.")
+    return sys.executable
+
+
+def _run_scene_worker(args: list[str], payload: dict[str, Any] | None = None, progress_callback=None) -> dict[str, Any]:
+    import subprocess
+
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join([str(RESOURCE_DIR), env.get("PYTHONPATH", "")])
+    env["PYTHONUNBUFFERED"] = "1"
+    venice = (payload or {}).get("venice") or {}
+    if venice.get("token"):
+        env["VENICE_MEDIA_LOCAL_TOKEN"] = str(venice["token"])  # passed by environment, never on the command line
+    proc = subprocess.Popen([_scene_python(), "-m", "scene_splat", *args], cwd=str(RESOURCE_DIR), env=env,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    result: dict[str, Any] | None = None
+    error: str | None = None
+    tail: list[str] = []
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        line = line.strip()
+        if not line.startswith("{"):
+            tail = (tail + [line])[-20:]
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        kind = event.pop("event", "")
+        if kind == "progress" and progress_callback:
+            progress_callback(event.get("message", ""), event.get("progress"))
+        elif kind in {"result", "check"}:
+            result = event
+        elif kind == "error":
+            error = event.get("error") or "Scene worker failed"
+    code = proc.wait()
+    if result is not None and code == 0:
+        return result
+    raise RuntimeError(error or f"Scene worker exited with code {code}: " + " | ".join(tail[-5:]))
+
+
+def scene_check(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    return _run_scene_worker(["--check"], payload)
+
+
+def _agent_scene_args(payload: dict[str, Any]) -> list[str]:
+    if not isinstance(payload, dict):
+        raise ValueError("Request body must be a JSON object.")
+    options = _nested_options(payload)
+    videos = _payload_value(payload, options, "videoPaths", "videos", "paths", default=[]) or []
+    if isinstance(videos, str):
+        videos = [videos]
+    image = _payload_value(payload, options, "imagePath", "image_path")
+    prompt = _payload_value(payload, options, "prompt")
+    if not videos and not image and not prompt:
+        raise ValueError("Give videoPaths, or imagePath / prompt for Venice to film the room.")
+    out_dir = Path(str(_payload_value(payload, options, "outputDir", "output_dir", default=OUT_ROOT / "scenes"))).expanduser()
+    name = _safe_output_stem(_payload_value(payload, options, "outputName", "output_name") or f"scene-{datetime.now():%Y%m%d-%H%M%S}")
+    args = ["--out", str(out_dir.resolve()), "--name", name]
+    for v in videos:
+        args += ["--video", str(Path(str(v)).expanduser().resolve())]
+    if image:
+        args += ["--capture-image", str(Path(str(image)).expanduser().resolve())]
+    elif prompt:
+        args += ["--capture-prompt", str(prompt)]
+    for v in _payload_value(payload, options, "viewPaths", "views", default=[]) or []:
+        args += ["--capture-view", str(Path(str(v)).expanduser().resolve())]
+    numeric = {
+        "fps": ("--fps", lambda x: _coerce_float(x, 6.0, 1.0, 30.0)),
+        "frameWidth": ("--width", lambda x: _coerce_int(x, 1280, 480, 3840)),
+        "steps": ("--steps", lambda x: _coerce_int(x, 20000, 500, 100000)),
+        "maxSplats": ("--max-splats", lambda x: _coerce_int(x, 600000, 10000, 5000000)),
+        "shDegree": ("--sh-degree", lambda x: _coerce_int(x, 1, 0, 1)),
+    }
+    for key, (flag, coerce) in numeric.items():
+        value = _payload_value(payload, options, key)
+        if value is not None:
+            args += [flag, str(coerce(value))]
+    for key, flag in (("captureMode", "--capture-mode"), ("captureDuration", "--capture-duration"), ("device", "--device")):
+        value = _payload_value(payload, options, key)
+        if value:
+            args += [flag, str(value)]
+    venice = payload.get("venice") or {}
+    if venice.get("url"):
+        args += ["--venice-url", str(venice["url"])]
+    if _payload_value(payload, options, "keepWork", default=False):
+        args.append("--keep-work")
+    return args
+
+
 def _run_agent_job(job_id: str, action: str, payload: dict[str, Any]) -> None:
     try:
         if action == "setup":
@@ -1026,6 +1163,12 @@ def _run_agent_job(job_id: str, action: str, payload: dict[str, Any]) -> None:
                 output_dir=request["output_dir"],
                 output_name=request["output_name"],
                 job_id=job_id,
+                progress_callback=lambda message, value: _agent_progress(job_id, message, value),
+            )
+        elif action == "scene":
+            result = _run_scene_worker(
+                _agent_scene_args(payload),
+                payload,
                 progress_callback=lambda message, value: _agent_progress(job_id, message, value),
             )
         else:
@@ -1128,6 +1271,8 @@ class AgentApiHandler(BaseHTTPRequestHandler):
                 self._send_json(200, agent_api_status())
             elif path == "/models":
                 self._send_json(200, {"ok": True, "models": _model_status()})
+            elif path == "/scene/check":
+                self._send_json(200, {"ok": True, "scene": scene_check()})
             else:
                 self._send_json(404, {"ok": False, "error": f"No agent endpoint for GET {path}"})
         except Exception as exc:
@@ -1141,6 +1286,9 @@ class AgentApiHandler(BaseHTTPRequestHandler):
                 self._send_json(200, _start_agent_job("setup", payload))
             elif path == "/generate":
                 self._send_json(200, _start_agent_job("generate", payload))
+            elif path == "/generate-scene":
+                _agent_scene_args(payload)  # validate before queueing
+                self._send_json(200, _start_agent_job("scene", payload))
             else:
                 self._send_json(404, {"ok": False, "error": f"No agent endpoint for POST {path}"})
         except AgentBusyError as exc:

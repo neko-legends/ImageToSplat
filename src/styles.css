@@ -489,3 +489,22 @@ input[type="range"] {
     border-top: 1px solid var(--border);
   }
 }
+
+.mode-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  padding: 14px 14px 0;
+}
+
+.mode-switch button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+textarea.path-input {
+  min-height: 72px;
+  padding: 8px 9px;
+  resize: vertical;
+  font: inherit;
+}

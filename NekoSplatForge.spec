@@ -9,6 +9,7 @@ project_dir = Path(SPECPATH)
 
 datas = [
     (str(project_dir / "static"), "static"),
+    (str(project_dir / "scene_splat"), "scene_splat"),  # run by the external scene worker Python
     (str(project_dir / "README.md"), "."),
     (str(project_dir / "LICENSE"), "."),
 ]

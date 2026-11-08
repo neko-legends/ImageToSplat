@@ -63,6 +63,7 @@ import { SparkRenderer, SplatMesh } from "@sparkjsdev/spark";
 
 const params = new URLSearchParams(location.search);
 const plyURL = params.get("ply");
+const camsURL = params.get("cams");  // scene mode: camera path JSON from scene_splat
 
 const loadingEl = document.getElementById("loading");
 const loadLabel = document.getElementById("loading-label");
@@ -102,6 +103,10 @@ function init(url) {
   controls.target.set(0, 0, 0);
 
   const splat = new SplatMesh({ url });
+  if (camsURL) {
+    initScene(splat, scene, camera, controls, renderer);
+    return;
+  }
   // DEG saves PLYs with -Y up and the front of the object facing roughly
   // along the horizontal axis.  Re-orient for Three.js (+Y up, camera on
   // +Z looking toward -Z): a Group lets us apply a yaw first (to bring the
@@ -161,6 +166,62 @@ function init(url) {
 
   // Fallback: hide loading after 4s regardless of bbox-readiness.
   setTimeout(() => { loadingEl.style.display = "none"; }, 4000);
+}
+
+// Scene mode: the splat is already y-up. Start at the first filmed camera, drag to look around,
+// W/A/S/D to walk, Q/E to go down/up, shift to move faster.
+function initScene(splat, scene, camera, controls, renderer) {
+  scene.add(splat);
+  document.getElementById("hud").textContent = "drag to look around · W A S D to walk · Q / E down / up · shift = faster";
+  const keys = new Set();
+  window.addEventListener("keydown", e => keys.add(e.key.toLowerCase()));
+  window.addEventListener("keyup", e => keys.delete(e.key.toLowerCase()));
+  let speed = 1;
+  fetch(camsURL).then(r => r.json()).then(doc => {
+    const pick = Number(params.get("cam") || 0);
+    const start = doc.cameras[Math.min(Math.max(pick, 0), doc.cameras.length - 1)];
+    camera.fov = start.fovY;
+    camera.updateProjectionMatrix();
+    camera.position.fromArray(start.position);
+    const look = new THREE.Vector3().fromArray(start.target).sub(camera.position).normalize();
+    controls.target.copy(camera.position).addScaledVector(look, 0.01);
+    controls.minDistance = 0.001;
+    controls.maxDistance = 0.02;
+    controls.enableZoom = false;
+    controls.enablePan = false;
+    controls.rotateSpeed = -0.35;  // drag moves the view like a first-person camera
+    controls.update();
+    speed = Math.max(doc.radius || 1, 0.1) * 0.6;
+    loadingEl.style.display = "none";
+  }).catch(e => showError("Camera file failed: " + e.message));
+  const clock = new THREE.Clock();
+  const fwd = new THREE.Vector3(), right = new THREE.Vector3(), move = new THREE.Vector3();
+  window.addEventListener("resize", () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+  renderer.setAnimationLoop(() => {
+    const dt = Math.min(clock.getDelta(), 0.1);
+    camera.getWorldDirection(fwd);
+    fwd.y = 0; fwd.normalize();
+    right.crossVectors(fwd, camera.up).normalize();
+    move.set(0, 0, 0);
+    if (keys.has("w")) move.add(fwd);
+    if (keys.has("s")) move.sub(fwd);
+    if (keys.has("d")) move.add(right);
+    if (keys.has("a")) move.sub(right);
+    if (keys.has("e")) move.y += 1;
+    if (keys.has("q")) move.y -= 1;
+    if (move.lengthSq() > 0) {
+      move.normalize().multiplyScalar(speed * dt * (keys.has("shift") ? 3 : 1));
+      camera.position.add(move);
+      controls.target.add(move);
+    }
+    controls.update();
+    renderer.render(scene, camera);
+  });
+  Promise.resolve(splat.initialized).then(() => { window.splatReady = true; });
 }
 </script>
 </body>

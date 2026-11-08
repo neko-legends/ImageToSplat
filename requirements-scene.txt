@@ -1,0 +1,8 @@
+# Scene mode worker (python -m scene_splat). Install CUDA PyTorch for your GPU first:
+#   https://pytorch.org/get-started/locally/
+numpy
+pillow
+pycolmap>=4.2
+gsplat>=1.5.3
+ninja
+imageio-ffmpeg
