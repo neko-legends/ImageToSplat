@@ -143,7 +143,9 @@ from video, so you can walk through it in three.js:
 2. **Every clip is inspected** before use (hard cuts, cross-fades, a camera that barely moves). AI video does not
    always follow the prompt; a Venice clip that fails is filmed again once, and every clip gets a contact sheet in
    `<name>.clips/`.
-3. **Camera positions** are solved across all clips with COLMAP (pycolmap).
+3. **Camera positions** are solved across all clips with COLMAP (pycolmap, default, best quality), or with
+   MapAnything (`sfm: "mapanything"`, about twice as fast overall: one GPU pass instead of CPU matching; training then
+   also refines each camera). In one 200-frame room test: COLMAP 14 min, 20.2 dB; MapAnything 7.4 min, 19.1 dB.
 4. **Splats are trained on the GPU** with gsplat (MCMC, capped splat count, light colour detail), then saved as a
    compressed **`.spz`** (a room is about 5-15 MB instead of 350-600 MB of `.ply`) plus `<name>.cameras.json`, the
    filmed camera path in three.js coordinates (y up). The splat is already y-up; load it with Spark
@@ -165,6 +167,13 @@ python -m scene_splat --check      # reports ffmpeg, pycolmap, torch/CUDA, gspla
 gsplat compiles its CUDA kernels on first use, so a CUDA toolkit (`nvcc`) is needed once; the worker finds it via
 `CUDA_HOME`, `nvcc` on `PATH`, `/opt/cuda` or `/usr/local/cuda`. Point the app at that environment with
 `IMAGETOSPLAT_SCENE_PYTHON=/path/to/python`. `IMAGETOSPLAT_FFMPEG` overrides ffmpeg.
+
+Optional MapAnything solver: install [MapAnything](https://github.com/facebookresearch/map-anything)
+(`pip install -e <clone>`) in the worker environment. It uses the Apache 2.0 weights `facebook/map-anything-apache`
+(downloaded once from Hugging Face). Its DINOv2 encoder is loaded from a local copy of
+[facebookresearch/dinov2](https://github.com/facebookresearch/dinov2) instead of being fetched from GitHub on every
+load: put a reviewed copy in `<torch hub dir>/facebookresearch_dinov2_main` (usually
+`~/.cache/torch/hub/facebookresearch_dinov2_main`) or set `IMAGETOSPLAT_DINOV2_DIR`.
 
 Venice capture needs Venice Media Local running with Agent Control on. Pass its Agent Control token in the GUI,
 as `venice.token` in the request, or set `VENICE_MEDIA_LOCAL_TOKEN` (`VENICE_MEDIA_LOCAL_URL` if it is not on
@@ -188,7 +197,7 @@ curl -X POST http://127.0.0.1:17340/generate-scene -H 'Content-Type: application
 
 `videoPaths` replaces `imagePath` for your own clips. Other options: `prompt`, `viewPaths` (your own extra views),
 `outputDir`, `fps` (frames taken per second, default 6), `frameWidth`, `steps`, `maxSplats`, `shDegree` (0 or 1),
-`device` (e.g. `cuda:1`), `keepWork`.
+`device` (e.g. `cuda:1`), `sfm` (`colmap` or `mapanything`), `keepWork`.
 
 ## Portable Windows Build
 

@@ -34,8 +34,21 @@ def to_three_frame(means, quats_wxyz, shN):
     return means, quats, shN
 
 
+def _so3_exp(w):
+    import torch
+
+    theta = w.norm().clamp_min(1e-12)
+    k = w / theta
+    K = torch.zeros(3, 3, device=w.device, dtype=w.dtype)
+    K[0, 1], K[0, 2], K[1, 0], K[1, 2], K[2, 0], K[2, 1] = -k[2], k[1], k[2], -k[0], -k[1], k[0]
+    return torch.eye(3, device=w.device, dtype=w.dtype) + torch.sin(theta) * K + (1 - torch.cos(theta)) * (K @ K)
+
+
 def train_splats(data: Path, out_dir: Path, steps: int = 20000, max_splats: int = 600_000, sh_degree: int = 1,
-                 holdout: int = 8, device: str = "cuda", progress=lambda msg, frac=None: None) -> dict:
+                 holdout: int = 8, device: str = "cuda", pose_opt: bool = False,
+                 progress=lambda msg, frac=None: None) -> dict:
+    """pose_opt: also refine each training camera (small rotation + translation), for poses from a feed-forward
+    model such as MapAnything that were not bundle-adjusted."""
     import pycolmap
     import torch
     import torch.nn.functional as F
@@ -60,8 +73,13 @@ def train_splats(data: Path, out_dir: Path, steps: int = 20000, max_splats: int 
     test_ids = set(range(0, len(views), holdout)) if holdout else set()
     train_ids = [i for i in range(len(views)) if i not in test_ids]
 
-    pts = torch.tensor(np.array([p.xyz for p in rec.points3D.values()], dtype=np.float32), device=device)
-    cols = torch.tensor(np.array([p.color for p in rec.points3D.values()], dtype=np.float32) / 255.0, device=device)
+    xyz = np.array([p.xyz for p in rec.points3D.values()], dtype=np.float32)
+    rgb = np.array([p.color for p in rec.points3D.values()], dtype=np.float32) / 255.0
+    if len(xyz) > max_splats // 2:  # MCMC never shrinks below its starting count; leave room to grow
+        pick = np.random.default_rng(0).choice(len(xyz), max_splats // 2, replace=False)
+        xyz, rgb = xyz[pick], rgb[pick]
+    pts = torch.tensor(xyz, device=device)
+    cols = torch.tensor(rgb, device=device)
     with torch.no_grad():
         d = [torch.cdist(pts[s:s + 4096], pts).topk(4, largest=False).values[:, 1:].mean(1) for s in range(0, len(pts), 4096)]
         dist = torch.cat(d).clamp_min(1e-7)
@@ -80,22 +98,36 @@ def train_splats(data: Path, out_dir: Path, steps: int = 20000, max_splats: int 
     lrs = {"means": 1.6e-4 * scene_scale, "scales": 5e-3, "quats": 1e-3, "opacities": 5e-2, "sh0": 2.5e-3, "shN": 2.5e-3 / 20}
     opts = {k: torch.optim.Adam([params[k]], lr=lr, eps=1e-15) for k, lr in lrs.items()}
     sched = torch.optim.lr_scheduler.ExponentialLR(opts["means"], gamma=0.01 ** (1.0 / steps))
+    pose_delta = torch.nn.Parameter(torch.zeros(len(views), 6, device=device))
+    pose_optimizer = torch.optim.Adam([pose_delta], lr=1e-4) if pose_opt else None
+    pose_scale = torch.tensor([1.0, 1.0, 1.0, scene_scale, scene_scale, scene_scale], device=device)
     strategy = MCMCStrategy(cap_max=max_splats, refine_stop_iter=int(steps * 0.8))
     strategy.check_sanity(params, opts)
     state = strategy.initialize_state()
 
-    def render(v, deg):
+    def view_w2c(i):
+        if not pose_opt:
+            return views[i]["w2c"]
+        d = pose_delta[i] * pose_scale
+        T = torch.eye(4, device=device)
+        T[:3, :3] = _so3_exp(d[:3])
+        T[:3, 3] = d[3:]
+        return T @ views[i]["w2c"]
+
+    def render(i, deg):
+        v = views[i]
         img, _, info = rasterization(
             params["means"], F.normalize(params["quats"], dim=-1), torch.exp(params["scales"]),
             torch.sigmoid(params["opacities"]), torch.cat([params["sh0"], params["shN"]], 1),
-            v["w2c"][None], v["K"][None], v["W"], v["H"], sh_degree=deg, packed=False)
+            view_w2c(i)[None], v["K"][None], v["W"], v["H"], sh_degree=deg, packed=False)
         return img[0].clamp(0, 1), info
 
     t0 = time.time()
     rng = np.random.default_rng(0)
     for step in range(steps):
-        v = views[train_ids[rng.integers(len(train_ids))]]
-        img, info = render(v, min(step // 1000, sh_degree))
+        vi = train_ids[rng.integers(len(train_ids))]
+        v = views[vi]
+        img, info = render(vi, min(step // 1000, sh_degree))
         gt = v["rgb"].to(device)
         loss = 0.8 * (img - gt).abs().mean() + 0.2 * (1 - _ssim(img.permute(2, 0, 1)[None], gt.permute(2, 0, 1)[None]))
         loss = loss + 0.01 * torch.sigmoid(params["opacities"]).mean() + 0.01 * torch.exp(params["scales"]).mean()
@@ -103,15 +135,28 @@ def train_splats(data: Path, out_dir: Path, steps: int = 20000, max_splats: int 
         for o in opts.values():
             o.step()
             o.zero_grad(set_to_none=True)
+        if pose_optimizer is not None:
+            pose_optimizer.step()
+            pose_optimizer.zero_grad(set_to_none=True)
         sched.step()
         strategy.step_post_backward(params, opts, state, step, info, lr=sched.get_last_lr()[0])
         if step % 500 == 0:
             progress(f"Training splats {step}/{steps}", step / steps)
 
+    if pose_opt and test_ids:  # align held-out cameras to the frozen splats before scoring them
+        for p_ in params.values():
+            p_.requires_grad_(False)
+        test_opt = torch.optim.Adam([pose_delta], lr=1e-4)
+        for _ in range(150):
+            for i in sorted(test_ids):
+                img, _ = render(i, sh_degree)
+                (img - views[i]["rgb"].to(device)).abs().mean().backward()
+            test_opt.step()
+            test_opt.zero_grad(set_to_none=True)
     psnrs = []
     with torch.no_grad():
         for i in sorted(test_ids):
-            img, _ = render(views[i], sh_degree)
+            img, _ = render(i, sh_degree)
             psnrs.append(float(-10 * torch.log10(((img - views[i]["rgb"].to(device)) ** 2).mean())))
 
     P = {k: v.detach().cpu().numpy() for k, v in params.items()}

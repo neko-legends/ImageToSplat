@@ -926,6 +926,7 @@ def _agent_openapi(port: int) -> dict[str, Any]:
                                         "maxSplats": {"type": "integer"},
                                         "shDegree": {"type": "integer", "enum": [0, 1]},
                                         "device": {"type": "string"},
+                                        "sfm": {"type": "string", "enum": ["colmap", "mapanything"]},
                                         "keepWork": {"type": "boolean"},
                                     },
                                 }
@@ -1134,7 +1135,8 @@ def _agent_scene_args(payload: dict[str, Any]) -> list[str]:
         value = _payload_value(payload, options, key)
         if value is not None:
             args += [flag, str(coerce(value))]
-    for key, flag in (("captureMode", "--capture-mode"), ("captureDuration", "--capture-duration"), ("device", "--device")):
+    for key, flag in (("captureMode", "--capture-mode"), ("captureDuration", "--capture-duration"), ("device", "--device"),
+                      ("sfm", "--sfm")):
         value = _payload_value(payload, options, key)
         if value:
             args += [flag, str(value)]

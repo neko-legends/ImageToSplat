@@ -43,7 +43,7 @@ def check() -> dict:
     except Exception as exc:
         report["ffmpeg"] = None
         report["ffmpegError"] = str(exc)
-    for mod in ("pycolmap", "torch", "gsplat"):
+    for mod in ("pycolmap", "torch", "gsplat", "mapanything"):
         try:
             m = __import__(mod)
             report[mod] = getattr(m, "__version__", "installed")
@@ -71,6 +71,8 @@ def main() -> int:
     ap.add_argument("--max-splats", type=int, default=600_000)
     ap.add_argument("--sh-degree", type=int, default=1, choices=[0, 1])
     ap.add_argument("--device", default="cuda", help="Torch device, e.g. cuda or cuda:1")
+    ap.add_argument("--sfm", choices=["colmap", "mapanything"], default="colmap",
+                    help="Camera solver: COLMAP (CPU) or MapAnything (GPU, needs the mapanything package)")
     ap.add_argument("--keep-work", action="store_true", help="Keep frames and COLMAP files")
     ap.add_argument("--check", action="store_true", help="Report available dependencies and exit")
     cap = ap.add_argument_group("Venice capture (instead of --video): needs Venice Media Local with Agent Control on; "
@@ -103,7 +105,7 @@ def main() -> int:
             emit(event="videos", videos=a.video)
 
         result = run_scene(a.video, a.out, name=a.name, fps=a.fps, width=a.width, steps=a.steps,
-                           max_splats=a.max_splats, sh_degree=a.sh_degree, keep_work=a.keep_work, device=a.device,
+                           max_splats=a.max_splats, sh_degree=a.sh_degree, keep_work=a.keep_work, device=a.device, sfm=a.sfm,
                            progress=emit_progress)
         emit(event="result", **result)
         return 0
