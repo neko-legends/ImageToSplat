@@ -46,7 +46,10 @@ scene.add(new SparkRenderer({ renderer }));
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 
-const items = await (await fetch(params.get("set"))).json();
+const setURL = new URL(params.get("set"), location.href);
+const items = await (await fetch(setURL)).json();
+for (const it of items) it.url = new URL(it.url, setURL).href;  // file names are relative to the list
+if (params.get("ui") === "0") for (const id of ["bar", "info", "hint"]) document.getElementById(id).style.display = "none";
 let current = -1, wire = false, framed = false;
 const mb = (n) => (n / 1e6).toFixed(n < 1e6 ? 2 : 1) + " MB";
 
@@ -54,7 +57,8 @@ function frame(box) {
   if (framed) return;
   framed = true;
   const c = box.getCenter(new THREE.Vector3()), r = box.getSize(new THREE.Vector3()).length() / 2;
-  camera.position.copy(c).add(new THREE.Vector3(r * 1.1, r * 0.9, r * 2.8));
+  const zoom = Number(params.get("zoom")) || 1;
+  camera.position.copy(c).add(new THREE.Vector3(r * 1.1, r * 0.9, r * 2.8).divideScalar(zoom));
   controls.target.copy(c);
   window.meshBox = box;
 }
@@ -84,6 +88,20 @@ async function load(item) {
     item.object = root;
     item.splat = splat;
     item.splats = splat.packedSplats?.numSplats ?? splat.numSplats;
+    // "wireframe" for a splat: one dot per splat centre
+    const pos = [], col = [];
+    splat.forEachSplat((i, center, scales, quat, opacity, color) => {
+      if (opacity < 0.3) return;
+      pos.push(center.x, center.y, center.z);
+      col.push(color.r ** 2.2, color.g ** 2.2, color.b ** 2.2);  // vertex colours are linear
+    });
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+    geo.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
+    item.points = new THREE.Points(geo, new THREE.PointsMaterial({ size: 1.5, sizeAttenuation: false, vertexColors: true }));
+    item.points.rotation.copy(splat.rotation);
+    item.points.visible = false;
+    root.add(item.points);
   }
 }
 
@@ -121,9 +139,15 @@ items.forEach((it, i) => {
 });
 const chk = document.createElement("label");
 chk.className = "chk";
-chk.innerHTML = '<input type="checkbox"> Wireframe (W)';
+chk.innerHTML = '<input type="checkbox"> Wireframe / points (W)';
 const box = chk.querySelector("input");
-const setWire = (on) => { wire = box.checked = on; for (const it of items) if (it.material) it.material.wireframe = on; };
+const setWire = (on) => {
+  wire = box.checked = on;
+  for (const it of items) {
+    if (it.material) it.material.wireframe = on;
+    if (it.points) { it.points.visible = on; it.splat.visible = !on; }
+  }
+};
 box.onchange = () => setWire(box.checked);
 bar.appendChild(chk);
 addEventListener("keydown", (e) => {
@@ -140,6 +164,7 @@ await Promise.all(items.filter((it) => /\.glb$/i.test(it.url)).map(load));
 show(current);
 await Promise.all(items.filter((it) => !it.object).map(load));
 alignSplats();
+setWire(wire);
 show(current);
 window.compareReady = true;
 window.showItem = (label) => show(items.findIndex((it) => it.label === label));

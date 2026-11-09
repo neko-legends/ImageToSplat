@@ -1,0 +1,16 @@
+# Everything the desktop app needs (image -> splat -> mesh). On Linux the default PyPI torch wheels include CUDA.
+torch
+torchvision
+numpy
+pillow
+safetensors
+tqdm
+huggingface_hub
+# mesh export (gsplat compiles its CUDA kernels on first use: needs the CUDA toolkit, nvcc)
+gsplat>=1.5.3
+ninja
+scipy
+scikit-image
+trimesh
+xatlas
+fast-simplification

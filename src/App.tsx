@@ -368,11 +368,44 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    refreshStatus().catch((error) => {
-      setStatus(null)
-      setMessage(`Service offline: ${formatError(error)}`)
-    })
-  }, [apiUrl, refreshStatus])
+    // Until the service answers, keep trying and show what it is doing (first run on Linux installs
+    // PyTorch, which takes minutes).
+    let stopped = false
+    let timer = 0
+    async function attempt() {
+      try {
+        await refreshStatus()
+        return
+      } catch (error) {
+        if (stopped) return
+        setStatus(null)
+        let text = `Service offline: ${formatError(error)}`
+        let failed = false
+        if (tauri) {
+          try {
+            const { invoke } = await import('@tauri-apps/api/core')
+            const setup = await invoke<{ state: string; message: string; detail: string }>('service_setup_status')
+            if (setup.state === 'failed') {
+              text = `Setup failed: ${setup.message}`
+              failed = true
+            } else if (setup.message) {
+              text = setup.state === 'installing' && setup.detail ? `${setup.message} · ${setup.detail}` : setup.message
+            }
+          } catch {
+            // older shell without the command: keep the plain message
+          }
+        }
+        if (stopped) return
+        setMessage(text)
+        if (!failed) timer = window.setTimeout(attempt, 1500)
+      }
+    }
+    attempt()
+    return () => {
+      stopped = true
+      window.clearTimeout(timer)
+    }
+  }, [apiUrl, refreshStatus, tauri])
 
   useEffect(() => {
     if (!polling) return

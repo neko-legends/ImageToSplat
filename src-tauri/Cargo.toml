@@ -1,6 +1,6 @@
 [package]
 name = "image-to-splat"
-version = "26.6.19"
+version = "26.11.9"
 description = "Image to Gaussian splat generator"
 authors = ["Neko Legends"]
 license = "MIT"

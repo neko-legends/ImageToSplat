@@ -38,10 +38,26 @@ def _ensure_gradio():
 IS_FROZEN = getattr(sys, "frozen", False)
 APP_DIR = Path(sys.executable).resolve().parent if IS_FROZEN else Path(__file__).resolve().parent
 RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", APP_DIR))
-CKPT_ROOT = Path(os.environ.get("TRIPOSPLAT_CKPTS", str(APP_DIR / "ckpts"))).resolve()
+
+
+
+def _data_dir() -> Path:
+    """Where models and outputs are written. IMAGETOSPLAT_DATA_DIR if set; else next to the app when that folder is
+    writable (portable build, source checkout); else the per-user data folder (an AppImage is read-only)."""
+    chosen = os.environ.get("IMAGETOSPLAT_DATA_DIR")
+    if chosen:
+        return Path(chosen).expanduser().resolve()
+    if os.access(APP_DIR, os.W_OK):
+        return APP_DIR
+    base = os.environ.get("LOCALAPPDATA") if os.name == "nt" else os.environ.get("XDG_DATA_HOME")
+    return (Path(base) if base else Path.home() / ".local" / "share") / "NekoLegends" / "ImageToSplat"
+
+
+DATA_DIR = _data_dir()
+CKPT_ROOT = Path(os.environ.get("TRIPOSPLAT_CKPTS", str(DATA_DIR / "ckpts"))).expanduser().resolve()
 TRIPOSPLAT_REPO_ID = "VAST-AI/TripoSplat"
 APP_NAME = "ImageToSplat"
-APP_VERSION = "dev"
+APP_VERSION = "26.11.9"
 AGENT_APP_ID = "image-to-splat"
 AGENT_APP_NAME = "ImageToSplat"
 AGENT_API_BIND_ADDRESS = "127.0.0.1"
@@ -65,7 +81,7 @@ MODEL_FILES = [
     ("Background remover", "background_removal/birefnet.safetensors"),
 ]
 
-OUT_ROOT     = (APP_DIR / "gradio_outputs").resolve()
+OUT_ROOT     = Path(os.environ.get("IMAGETOSPLAT_OUTPUT_DIR", str(DATA_DIR / "gradio_outputs"))).expanduser().resolve()
 OUT_ROOT.mkdir(parents=True, exist_ok=True)
 VIEWER_HTML  = (RESOURCE_DIR / "static/viewer/viewer.html").resolve()
 EXAMPLES_DIR = (RESOURCE_DIR / "static/example_inputs").resolve()
