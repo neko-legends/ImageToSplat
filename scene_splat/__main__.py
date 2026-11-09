@@ -87,14 +87,16 @@ def main() -> int:
     mesh.add_argument("--mesh-up", default="-y", choices=["y", "-y", "z", "-z"], help="Up axis of the splat (TripoSplat: -y)")
     mesh.add_argument("--mesh-yaw", type=float, default=-90.0,
                       help="Turn about the up axis (degrees) so the front faces +z (TripoSplat: -90)")
+    mesh.add_argument("--mesh-texture", type=int, default=2048,
+                      help="Baked JPEG texture size on a simplified mesh; 0 = full mesh with a colour per vertex")
+    mesh.add_argument("--mesh-faces", type=int, default=0, help="Simplify to about this many triangles (0 = textured: 100k, vertex colours: keep all)")
     mesh.add_argument("--mesh-grid", type=int, default=256, help="Volume resolution; higher = finer detail and bigger file")
     cap = ap.add_argument_group("Venice capture (instead of --video): needs Venice Media Local with Agent Control on; "
                                 "token from VENICE_MEDIA_LOCAL_TOKEN or ~/.config/venice-media-local/agent.json")
     cap.add_argument("--capture-image", help="Room image to film")
     cap.add_argument("--capture-prompt", help="Describe the room; Venice draws it first")
     cap.add_argument("--capture-view", action="append", default=[], help="Extra view images of the same room (skip auto views)")
-    cap.add_argument("--capture-mode", choices=["first-last", "reference", "object-spin"], default="first-last",
-                     help="object-spin: one Flux 360 degree orbit around an object image")
+    cap.add_argument("--capture-mode", choices=["first-last", "reference"], default="first-last")
     cap.add_argument("--capture-duration", default="5s")
     cap.add_argument("--venice-url", default=None, help="Venice Media Local address (default http://127.0.0.1:9876)")
     a = ap.parse_args()
@@ -108,7 +110,7 @@ def main() -> int:
 
             ply = Path(a.mesh).expanduser().resolve()
             out = Path(a.mesh_out).expanduser().resolve() if a.mesh_out else ply.with_name(ply.stem.removesuffix("_native").removesuffix(".scene") + "_mesh.glb")
-            emit(event="result", **mesh_from_file(ply, out, up=a.mesh_up, yaw=a.mesh_yaw, grid=a.mesh_grid, device=a.device,
+            emit(event="result", **mesh_from_file(ply, out, up=a.mesh_up, yaw=a.mesh_yaw, grid=a.mesh_grid, texture=a.mesh_texture, faces=a.mesh_faces, device=a.device,
                                                  progress=lambda msg, frac=None: emit(event="progress", message=msg, progress=frac)))
             return 0
         except Exception as exc:

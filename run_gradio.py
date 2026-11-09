@@ -567,6 +567,17 @@ def _safe_output_stem(value: str | None) -> str:
     return cleaned or "neko_splat"
 
 
+def _save_spz(ply: Path, out: Path):
+    """Compressed splat (.spz, about a fifth of the .ply), loads in Spark like the .ply."""
+    from scene_splat.mesh import load_ply
+    from scene_splat.spz import write_spz
+
+    d = load_ply(ply)
+    col = lambda *k: np.stack([d[x] for x in k], 1)
+    write_spz(out, col("x", "y", "z"), col("scale_0", "scale_1", "scale_2"), col("rot_0", "rot_1", "rot_2", "rot_3"),
+              d["opacity"], col("f_dc_0", "f_dc_1", "f_dc_2"), None, 0)
+
+
 def _export_common_formats(gaussian, out_dir: Path, output_name: str | None = None):
     xyz, rgba = _point_cloud_data(gaussian)
     stem = _safe_output_stem(output_name)
@@ -581,6 +592,8 @@ def _export_common_formats(gaussian, out_dir: Path, output_name: str | None = No
     }
     gaussian.save_ply(str(paths["ply"]))
     gaussian.save_splat(str(paths["splat"]))
+    paths["spz"] = out_dir / f"{stem}.spz"
+    _save_spz(paths["ply"], paths["spz"])
     _save_glb(paths["glb"], xyz, rgba)
     _save_gltf_zip(paths["gltf"], xyz, rgba)
     _save_obj(paths["obj"], xyz, rgba)
@@ -915,7 +928,7 @@ def _agent_openapi(port: int) -> dict[str, Any]:
                                         "imagePath": {"type": "string", "description": "Room image for Venice capture"},
                                         "prompt": {"type": "string", "description": "Room description for Venice capture"},
                                         "viewPaths": {"type": "array", "items": {"type": "string"}},
-                                        "captureMode": {"type": "string", "enum": ["reference", "first-last", "object-spin"]},
+                                        "captureMode": {"type": "string", "enum": ["reference", "first-last"]},
                                         "captureDuration": {"type": "string", "example": "15s"},
                                         "venice": {"type": "object", "properties": {"url": {"type": "string"}, "token": {"type": "string"}}},
                                         "outputDir": {"type": "string"},
@@ -958,6 +971,7 @@ def _agent_openapi(port: int) -> dict[str, Any]:
                                         "guidanceScale": {"type": "number"},
                                         "numGaussians": {"type": "integer"},
                                         "mesh": {"type": "boolean", "description": "Also export a real polygon mesh (<name>_mesh.glb). Default true."},
+                                        "meshTexture": {"type": "integer", "description": "Mesh texture size, default 2048; 0 = colour per vertex, no texture."},
                                     },
                                 }
                             }
@@ -1044,6 +1058,7 @@ def _agent_generate_options(payload: dict[str, Any]) -> dict[str, Any]:
         "output_dir": _payload_value(payload, options, "outputDir", "output_dir"),
         "output_name": _payload_value(payload, options, "outputName", "output_name"),
         "mesh": _payload_value(payload, options, "mesh", default=True) not in (False, "false", "0", 0),
+        "mesh_texture": _coerce_int(_payload_value(payload, options, "meshTexture", "mesh_texture", default=2048), 2048, 0, 8192),
     }
 
 
@@ -1169,6 +1184,7 @@ def _run_agent_job(job_id: str, action: str, payload: dict[str, Any]) -> None:
                 job_id=job_id,
                 progress_callback=lambda message, value: _agent_progress(job_id, message, value),
                 mesh=request["mesh"],
+                mesh_texture=request["mesh_texture"],
             )
         elif action == "scene":
             result = _run_scene_worker(
@@ -1539,11 +1555,14 @@ def run_generation_core(
     job_id: str | None = None,
     progress_callback=None,
     mesh: bool = True,
+    mesh_texture: int = 2048,
 ) -> dict[str, Any]:
     """Run TripoSplat once and write every supported export format.
 
-    mesh: also convert the splat into a real polygon mesh (<name>_mesh.glb, vertex colours) with the scene worker
-    (needs gsplat, scikit-image and trimesh). A failed mesh export is reported but does not fail the job."""
+    mesh: also convert the splat into a real polygon mesh (<name>_mesh.glb) with the scene worker (needs gsplat,
+    scikit-image, trimesh, xatlas, fast-simplification). mesh_texture: texture size (2048 = 100k triangles and a
+    2048x2048 JPEG texture; 0 = full-resolution mesh with a colour per vertex). A failed mesh export is reported but
+    does not fail the job."""
     input_image = _load_input_image(image)
     seed = _coerce_int(seed, 42, 0, 2**31 - 1)
     steps = _coerce_int(steps, 20, 1, 50)
@@ -1585,7 +1604,7 @@ def run_generation_core(
     if mesh:
         report("Building a 3D mesh", 0.9)
         try:
-            built = _run_scene_worker(["--mesh", str(export_paths["ply"])],
+            built = _run_scene_worker(["--mesh", str(export_paths["ply"]), "--mesh-texture", str(int(mesh_texture))],
                                       progress_callback=lambda m, p: report(m, 0.9 + 0.1 * (p or 0)))
             export_paths["mesh"] = Path(built["glb"])
         except Exception as exc:

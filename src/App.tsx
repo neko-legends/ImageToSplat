@@ -129,12 +129,13 @@ export default function App() {
   const [viewerSrc, setViewerSrc] = useState('')
   const [previewKind, setPreviewKind] = useState<'splat' | 'mesh'>('splat')
   const [preparedSrc, setPreparedSrc] = useState('')
-  const [mode, setMode] = useState<Mode>('image')
+  // Room / scene mode is not offered in the app for now (CLI and Agent API only); flip this to bring the tab back.
+  const [mode] = useState<Mode>('image')
   const [captureSource, setCaptureSource] = useState<CaptureSource>('videos')
   const [videoPaths, setVideoPaths] = useState<string[]>([])
   const [roomImage, setRoomImage] = useState('')
   const [roomPrompt, setRoomPrompt] = useState('')
-  const [captureMode, setCaptureMode] = useState<'first-last' | 'reference' | 'object-spin'>('first-last')
+  const [captureMode, setCaptureMode] = useState<'first-last' | 'reference'>('first-last')
   const [veniceToken, setVeniceToken] = useState('')
   const [maxSplats, setMaxSplats] = useState(600000)
   const [sceneSteps, setSceneSteps] = useState(20000)
@@ -275,7 +276,7 @@ export default function App() {
       if (captureSource === 'image') body.imagePath = roomImage.trim()
       else body.prompt = roomPrompt.trim()
       body.captureMode = captureMode
-      body.captureDuration = captureMode === 'first-last' ? '5s' : captureMode === 'object-spin' ? '10s' : '15s'
+      body.captureDuration = captureMode === 'first-last' ? '5s' : '15s'
       if (veniceToken.trim()) body.venice = { token: veniceToken.trim() }
     }
     try {
@@ -435,17 +436,6 @@ export default function App() {
           </button>
         </section>
 
-        <div className="mode-switch">
-          <button type="button" className={mode === 'image' ? 'active' : ''} onClick={() => setMode('image')}>
-            <ImageIcon size={15} />
-            Single image
-          </button>
-          <button type="button" className={mode === 'scene' ? 'active' : ''} onClick={() => setMode('scene')}>
-            <Clapperboard size={15} />
-            Room / scene
-          </button>
-        </div>
-
         {mode === 'scene' && (
           <section className="section">
             <div className="section-title">
@@ -498,9 +488,8 @@ export default function App() {
               <>
                 <label className="field">
                   <span>Video</span>
-                  <select value={captureMode} onChange={(event) => setCaptureMode(event.target.value as 'first-last' | 'reference' | 'object-spin')}>
+                  <select value={captureMode} onChange={(event) => setCaptureMode(event.target.value as 'first-last' | 'reference')}>
                     <option value="first-last">Flux 3 view-to-view</option>
-                    <option value="object-spin">Flux 3 360 orbit (object)</option>
                     <option value="reference">Seedance 2.5 one spin</option>
                   </select>
                 </label>

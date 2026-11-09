@@ -8,3 +8,5 @@ ninja
 imageio-ffmpeg
 scikit-image
 trimesh
+xatlas
+fast-simplification

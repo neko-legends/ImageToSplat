@@ -62,52 +62,52 @@ If port `7860` is already in use, set `TRIPOSPLAT_PORT` before launching.
 
 The local app provides an image uploader, sampling controls, a Spark.js 3D
 Gaussian splat viewer, first-launch Setup popup for downloading the expected
-TripoSplat `.safetensors` files, and export buttons for:
+TripoSplat `.safetensors` files, and these exports:
 
-- Native Gaussian splat formats: `.ply`, `.splat`
-- **A real polygon mesh: `<name>_mesh.glb`** (see below)
-- Point-cloud conversions of the splat centres: `.glb`, glTF `.zip`, `.obj`, `.fbx`
+| File | What it is | Chest example |
+|---|---|---|
+| `<name>.spz` | compressed splat (Spark, three.js) | 3.8 MB |
+| `<name>_native.ply`, `.splat` | splat in the standard formats | 17.8 MB, 8.4 MB |
+| `<name>_mesh.glb` | **real textured mesh**: 100k triangles + 2048×2048 JPEG texture | 4.0 MB |
+| `<name>_point_cloud.glb/.obj/.fbx`, glTF `.zip` | splat centres as a coloured point cloud | 4-17 MB |
 
 The preview switches between **Splat** and **Mesh (.glb)**.
 
+![Treasure chest: splat and textured mesh](static/doc/chest_compare.webp)
+
 ### Real 3D mesh export
 
-TripoSplat makes Gaussian splats, not polygons, so the app also turns every result into an ordinary mesh that
-Blender, game engines and three.js (`GLTFLoader`) can open:
+TripoSplat makes Gaussian splats, not polygons, so the app also turns every result into an ordinary textured mesh
+that Blender, game engines and three.js (`GLTFLoader`) open like any model:
 
 1. the splat is rendered (colour and depth) from 128 directions around the object;
 2. the depth maps are fused into a signed-distance volume (TSDF, 256³), with the silhouettes carving away empty space;
-3. marching cubes extracts the surface, small floating pieces are dropped;
-4. each vertex takes the average colour of the views that see it head-on.
+3. marching cubes extracts the surface, small floating pieces are dropped, and the mesh is simplified to 100k
+   triangles;
+4. xatlas unwraps it, and every texel of a 2048×2048 texture takes the colour of the 1024 px splat renders that see
+   its surface point most head-on.
 
-The `.glb` is y-up, stands on y = 0 with its front facing +z, and uses an unlit material
-(`KHR_materials_unlit`): the colours already contain the shading and highlights of the source image, so lighting
-them again would wash them out. About 8 s and 10 MB (500k triangles) per object. It needs the scene worker
-packages (gsplat, scikit-image, trimesh; see [Scene requirements](#scene-requirements)); without them the job still
-finishes and reports `meshError`. Turn it off with `"mesh": false` in the API or `--no-mesh` on the command line.
-Convert any splat yourself:
+The `.glb` is y-up, stands on y = 0 with its front facing +z, and uses an unlit material (`KHR_materials_unlit`):
+the texture already contains the shading and highlights of the source image, so lighting it again would wash it
+out. About 40 s per object. The texture keeps more detail than a colour per vertex at less than half the size
+(left: 514k triangles with vertex colours, 10 MB; right: textured, 4 MB):
+
+![Close-up: vertex colours vs texture](static/doc/chest_mesh_closeup.webp)
+
+It needs the scene worker packages (see [Scene requirements](#scene-requirements)); without them the job still
+finishes and reports `meshError`. API options: `"mesh": false` to skip it, `"meshTexture": 4096` for a bigger
+texture, `0` for the full-resolution mesh with vertex colours; `--no-mesh` on the command line. Convert any splat
+yourself:
 
 ```bash
-python -m scene_splat --mesh chest_native.ply                  # -> chest_mesh.glb
-python -m scene_splat --mesh scene.spz --mesh-up y --mesh-yaw 0  # a .spz from scene mode (already y-up)
+python -m scene_splat --mesh chest_native.ply                     # -> chest_mesh.glb (textured)
+python -m scene_splat --mesh chest_native.ply --mesh-texture 0     # vertex colours, no simplification
+python -m scene_splat --mesh scene.spz --mesh-up y --mesh-yaw 0    # a .spz that is already y-up
 ```
 
-Limits: thin parts (cloth, hair, leaves) can close up or get holes, and there is no texture atlas, so detail is
-limited by the vertex density (`--mesh-grid 384` for finer detail and a bigger file).
-
-### Single image or video? (objects)
-
-![Treasure chest: single image vs Flux 360 video](static/doc/chest_compare.webp)
-
-One stylized chest drawn with `gpt-image-2-6-sunburst`, turned into 3D three ways:
-
-- **Single image → splat (TripoSplat)**: 28 s, clean from every side, and the result to use for objects. It invents
-  the back (here it repeated the front ornament) and is a little softer and less shiny than the image.
-- **Single image → mesh**: the same model as a `.glb`, nearly identical to the splat.
-- **Flux 3 360 orbit video → splat** (`captureMode: "object-spin"`, then COLMAP and gsplat as in scene mode): 26
-  minutes, 25.7 dB on held-back frames. Seen from the filmed path it is sharper and shinier, with a real wood back,
-  but Flux re-draws the object while it turns (the chest got wider), and from any camera position the video never
-  used it shows smears and floaters. Use it when the object will only be seen from about where it was filmed.
+Limits: thin parts (cloth, hair, leaves) can close up or get holes, and the lighting is baked in. Making the splat
+from a Flux 360 degree video instead of one image was tested and dropped: it was sharper only from the filmed
+angles, smeared everywhere else, and Flux reshaped the object while turning.
 
 ## AI Agent Control and Headless Mode
 
@@ -165,7 +165,7 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:17340/generate -ContentType
 `POST /generate` returns a `jobId`; poll `GET /status` for progress and final
 export paths.
 
-## Room / Scene Mode (walkable splats for three.js)
+## Room / Scene Mode (experimental: command line and Agent API only)
 
 Single-image mode guesses the hidden sides of one object. Scene mode instead rebuilds a **room or any still scene**
 from video, so you can walk through it in three.js:
