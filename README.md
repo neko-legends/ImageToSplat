@@ -146,7 +146,8 @@ curl -X POST http://127.0.0.1:17340/mesh -H 'Content-Type: application/json' -d 
 plus `plyPath` (default: the last generated splat) and `outputPath`.
 
 Start it yourself with `python run_gradio.py --serve-agent-api [--agent-api-port N]`, or beside the browser UI
-with `--agent-api`. Environment: `TRIPOSPLAT_AGENT_API=1`, `TRIPOSPLAT_AGENT_API_PORT`, `TRIPOSPLAT_HEADLESS=1`,
+with `--agent-api`. The AppImage takes the same flags to run the service without a window:
+`"Neko Splat Forge_<version>_amd64.AppImage" --serve-agent-api --agent-api-port 17340`. Environment: `TRIPOSPLAT_AGENT_API=1`, `TRIPOSPLAT_AGENT_API_PORT`, `TRIPOSPLAT_HEADLESS=1`,
 `TRIPOSPLAT_OPEN_BROWSER=0`, `TRIPOSPLAT_PORT` (browser UI port).
 
 ## Room / Scene Mode (experimental: command line and Agent API only)

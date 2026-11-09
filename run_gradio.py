@@ -1437,9 +1437,15 @@ def _launch_agent_api_from_env() -> bool:
 def _serve_agent_api_forever(port: int | str | None = None) -> int:
     status = start_agent_api_server(port)
     print(json.dumps(status, indent=2), flush=True)
+    # The desktop app passes its pid: stop when it is gone (killed without a clean exit), so no
+    # service is left behind holding the GPU and the port.
+    parent = os.environ.get("IMAGETOSPLAT_PARENT_PID", "")
     try:
         while True:
-            time.sleep(3600)
+            if parent.isdigit() and hasattr(os, "getppid") and os.getppid() != int(parent):
+                stop_agent_api_server()
+                return 0
+            time.sleep(2 if parent.isdigit() else 3600)
     except KeyboardInterrupt:
         stop_agent_api_server()
     return 0
