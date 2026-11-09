@@ -101,6 +101,9 @@ def reconstruct(work: Path, progress=lambda msg, frac=None: None, device="cuda",
     for xyz, rgb in zip(pts.astype(np.float64), cols):
         rec.add_point3D(xyz, pycolmap.Track(), rgb)
 
+    from .level import level
+
+    level(rec)
     out = work / "undistorted"
     (out / "sparse").mkdir(parents=True, exist_ok=True)
     rec.write(out / "sparse")

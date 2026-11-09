@@ -17,7 +17,8 @@ EDIT_MODEL = "gpt-image-2-6-sunburst-edit"
 REFERENCE_VIDEO_MODEL = "seedance-2-5-reference-to-video-basic"
 FIRST_LAST_VIDEO_MODEL = "flux-3-first-last-frame-to-video"
 FROZEN = ("Frozen moment: nothing in the room moves, no people, the light stays exactly the same. "
-          "One continuous take, no cuts, no transitions, no fades. No music.")
+          "One continuous take, no cuts, no transitions, no fades. No music. "
+          "The lens never zooms: the same wide field of view from the first frame to the last.")
 
 # Views of a room, in clockwise order as seen from the middle of the room. The first is the source image.
 ROOM_VIEWS = [
@@ -104,9 +105,18 @@ class VeniceMediaLocal:
         if not qid:
             raise RuntimeError(f"Venice Media Local did not queue the video: {str(queued)[:300]}")
         t0 = time.time()
+        errors_since = None
         while time.time() - t0 < timeout:
             time.sleep(poll)
-            r = self.call("/retrieve-video", {"queueId": qid, "model": model})
+            try:
+                r = self.call("/retrieve-video", {"queueId": qid, "model": model})
+                errors_since = None
+            except (RuntimeError, OSError) as e:  # Venice Media Local restarting or briefly unavailable: keep the job
+                errors_since = errors_since or time.time()
+                if time.time() - errors_since > 600:
+                    raise
+                progress(f"Venice is not answering ({str(e)[:120]}); still waiting for {out.name}", None)
+                continue
             status = str(r.get("status", "")).lower()
             result = r.get("result") or {}
             if result.get("dataUrl"):
@@ -117,17 +127,30 @@ class VeniceMediaLocal:
         raise TimeoutError("Venice video timed out")
 
 
+def room_panorama(vml: VeniceMediaLocal, source: Path, out: Path) -> Path:
+    """One wide panorama of the whole room from the source camera. Every other view is drawn from it, so they agree on
+    where things are (views edited independently put the same furniture in different places)."""
+    prompt = ("Image 1 shows one room. Make a full 360 degree equirectangular panorama (as shot by a 360 camera on a "
+              "tripod) of this exact room from the camera position of Image 1, at eye level. The middle of the panorama "
+              "shows exactly what Image 1 shows; the rest shows the remaining walls of the same room all the way around, so "
+              "the left and right edges join seamlessly. Keep the same furniture, materials, colours and light. "
+              "Photorealistic, sharp, no people.")
+    return vml.edit_image(prompt, [source], out, aspect="21:9")
+
+
 def room_views(vml: VeniceMediaLocal, source: Path, work: Path, progress=lambda m, f=None: None) -> list[Path]:
-    """Source image plus three edited views of the same room, in clockwise order."""
+    """Source image plus three edited views of the same room, in clockwise order, all drawn from one panorama."""
+    progress("Drawing a panorama of the room", None)
+    pano = room_panorama(vml, source, work / "panorama.png")
     views = [source]
     for i, (label, where) in enumerate(ROOM_VIEWS):
         progress(f"Drawing the {label} view", None)
-        refs = [source] if i == 0 else [source, views[2] if len(views) > 2 else views[-1]]
-        prompt = (f"Image 1{' and Image 2 show' if len(refs) > 1 else ' shows'} one room. Make another photo of this exact "
-                  f"room: {where}. Keep the same furniture, decor, materials, colours and light; anything newly visible "
-                  "must match the style of the room. Photorealistic wide-angle interior photo at eye level, sharp, richly "
-                  "textured, no people.")
-        views.append(vml.edit_image(prompt, refs, work / f"view{i + 2}.png"))
+        prompt = ("Image 1 is a wide panorama of one room seen from where the camera of Image 2 stands; Image 2 is a "
+                  f"normal photo of the same room. Make another normal photo of this exact room: "
+                  f"{where.replace('Image 1', 'Image 2')}. Everything must be where the panorama shows it: same layout, "
+                  "furniture, decor, materials, colours and light. Photorealistic interior photo at eye level with the "
+                  "same wide-angle lens and field of view as Image 2, sharp, no people.")
+        views.append(vml.edit_image(prompt, [pano, source], work / f"view{i + 2}.png"))
     return views
 
 

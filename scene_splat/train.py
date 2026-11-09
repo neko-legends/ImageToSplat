@@ -45,10 +45,12 @@ def _so3_exp(w):
 
 
 def train_splats(data: Path, out_dir: Path, steps: int = 20000, max_splats: int = 600_000, sh_degree: int = 1,
-                 holdout: int = 8, device: str = "cuda", pose_opt: bool = False,
+                 holdout: int = 8, device: str = "cuda", pose_opt: bool = False, drop_outliers: float = 1.6,
                  progress=lambda msg, frac=None: None) -> dict:
     """pose_opt: also refine each training camera (small rotation + translation), for poses from a feed-forward
-    model such as MapAnything that were not bundle-adjusted."""
+    model such as MapAnything that were not bundle-adjusted.
+    drop_outliers: at 40 % of training, stop using frames whose running loss is this many times the median (AI video
+    sometimes jumps or morphs for a few frames; those frames disagree with the rest and smear the scene). 0 = keep all."""
     import pycolmap
     import torch
     import torch.nn.functional as F
@@ -124,13 +126,25 @@ def train_splats(data: Path, out_dir: Path, steps: int = 20000, max_splats: int 
 
     t0 = time.time()
     rng = np.random.default_rng(0)
+    frame_loss = {}
+    dropped = []
     for step in range(steps):
+        if drop_outliers and step == int(steps * 0.4) and frame_loss:
+            med = float(np.median(list(frame_loss.values())))
+            dropped = sorted(i for i, l in frame_loss.items() if l > drop_outliers * med)
+            if len(dropped) < len(train_ids) // 4:  # never throw away a large part of the capture
+                train_ids = [i for i in train_ids if i not in dropped]
+                if dropped:
+                    progress(f"Ignoring {len(dropped)} frames that disagree with the rest", None)
+            else:
+                dropped = []
         vi = train_ids[rng.integers(len(train_ids))]
         v = views[vi]
         img, info = render(vi, min(step // 1000, sh_degree))
         gt = v["rgb"].to(device)
         loss = 0.8 * (img - gt).abs().mean() + 0.2 * (1 - _ssim(img.permute(2, 0, 1)[None], gt.permute(2, 0, 1)[None]))
         loss = loss + 0.01 * torch.sigmoid(params["opacities"]).mean() + 0.01 * torch.exp(params["scales"]).mean()
+        frame_loss[vi] = 0.7 * frame_loss.get(vi, loss.item()) + 0.3 * loss.item()
         loss.backward()
         for o in opts.values():
             o.step()
@@ -162,6 +176,11 @@ def train_splats(data: Path, out_dir: Path, steps: int = 20000, max_splats: int 
     P = {k: v.detach().cpu().numpy() for k, v in params.items()}
     quats = F.normalize(params["quats"], dim=-1).detach().cpu().numpy()
     keep = 1 / (1 + np.exp(-P["opacities"])) >= 0.005
+    # floaters: splats sitting on top of a camera, or huge blurry blobs
+    with torch.no_grad():
+        near = torch.cdist(params["means"].detach(), centers).min(1).values.cpu().numpy() < 0.05 * scene_scale
+    huge = np.exp(P["scales"]).max(1) > 0.1 * scene_scale
+    keep &= ~near & ~huge
     means, quats, shN = to_three_frame(P["means"][keep], quats[keep], P["shN"][keep])
     spz_path = out_dir / "scene.spz"
     count = write_spz(spz_path, means, P["scales"][keep], quats, P["opacities"][keep], P["sh0"][keep, 0], shN, sh_degree)
@@ -172,4 +191,5 @@ def train_splats(data: Path, out_dir: Path, steps: int = 20000, max_splats: int 
         "heldOutPsnr": round(float(np.mean(psnrs)), 2) if psnrs else None,
         "trainSeconds": round(time.time() - t0, 1),
         "steps": steps,
+        "droppedFrames": [views[i]["name"] for i in dropped],
     }

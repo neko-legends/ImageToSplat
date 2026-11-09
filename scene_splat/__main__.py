@@ -3,13 +3,19 @@
 Prints one JSON object per line: {"event": "progress", ...}, then {"event": "result", ...} or {"event": "error", ...}.
 `--check` reports which dependencies are available.
 """
-import argparse
-import json
 import os
-import shutil
-import sys
-import traceback
-from pathlib import Path
+
+# OpenBLAS builds for a fixed number of threads (often 24 or 64); on CPUs with more cores, COLMAP's matcher threads
+# corrupt its heap ("corrupted size vs. prev_size"). Cap it before numpy or pycolmap load it.
+for _var in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS"):
+    os.environ.setdefault(_var, str(min(16, os.cpu_count() or 1)))
+
+import argparse  # noqa: E402
+import json  # noqa: E402
+import shutil  # noqa: E402
+import sys  # noqa: E402
+import traceback  # noqa: E402
+from pathlib import Path  # noqa: E402
 
 
 def emit(**payload):
@@ -65,7 +71,7 @@ def main() -> int:
     ap.add_argument("--video", action="append", default=[], help="Input video (repeat for several clips of one scene)")
     ap.add_argument("--out", help="Output directory")
     ap.add_argument("--name", default="scene")
-    ap.add_argument("--fps", type=float, default=6.0, help="Frames per second taken from each video")
+    ap.add_argument("--fps", type=float, default=10.0, help="Frames per second taken from each video")
     ap.add_argument("--width", type=int, default=1280, help="Frame width used for reconstruction")
     ap.add_argument("--steps", type=int, default=20000)
     ap.add_argument("--max-splats", type=int, default=600_000)
@@ -80,8 +86,8 @@ def main() -> int:
     cap.add_argument("--capture-image", help="Room image to film")
     cap.add_argument("--capture-prompt", help="Describe the room; Venice draws it first")
     cap.add_argument("--capture-view", action="append", default=[], help="Extra view images of the same room (skip auto views)")
-    cap.add_argument("--capture-mode", choices=["reference", "first-last"], default="reference")
-    cap.add_argument("--capture-duration", default="15s")
+    cap.add_argument("--capture-mode", choices=["first-last", "reference"], default="first-last")
+    cap.add_argument("--capture-duration", default="5s")
     cap.add_argument("--venice-url", default=None, help="Venice Media Local address (default http://127.0.0.1:9876)")
     a = ap.parse_args()
     _prepare_cuda_build_env()

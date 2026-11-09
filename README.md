@@ -136,17 +136,25 @@ from video, so you can walk through it in three.js:
 1. **Video in.** Use your own clips of a still scene (several clips of one room are joined), or let
    [Venice Media Local](https://github.com/neko-legends/venice-media-local) film it:
    - give a room image (or a prompt, and `gpt-image-2-6-sunburst` draws it);
-   - Sunburst edit draws the same room from three more directions;
-   - Flux 3 first/last-frame films a fast turn from each view to the next, closing the loop
-     (`captureMode: "first-last"`, default in the GUI), or Seedance 2.5 reference-to-video makes one spin through all
-     views (`captureMode: "reference"`).
+   - Sunburst edit first draws one wide panorama of the whole room, then draws the room from three more directions
+     using that panorama, so every view agrees on where things are (views edited one by one put the same bookshelf
+     in different places, and the splat then smears the versions together);
+   - Flux 3 first/last-frame films a fast 5 s turn from each view to the next, closing the loop
+     (`captureMode: "first-last"`, the default), or Seedance 2.5 reference-to-video makes one spin through all
+     views (`captureMode: "reference"`). Longer turns (180 degrees in one clip) dissolve, and more, smaller turns
+     invent more in-between content, so four 90 degree turns work best.
 2. **Every clip is inspected** before use (hard cuts, cross-fades, a camera that barely moves). AI video does not
    always follow the prompt; a Venice clip that fails is filmed again once, and every clip gets a contact sheet in
    `<name>.clips/`.
-3. **Camera positions** are solved across all clips with COLMAP (pycolmap, default, best quality), or with
+3. **Camera positions** are solved across all clips with COLMAP (pycolmap, default, best quality). Each frame gets
+   its own focal length and lens distortion, because AI video zooms while it moves (one Flux clip drifted 28 % in
+   focal length; one shared lens bent the room). The result is levelled (the average camera "up" becomes +y) so the
+   viewer starts upright and walking stays on the floor. Alternatively, solve with
    MapAnything (`sfm: "mapanything"`, about twice as fast overall: one GPU pass instead of CPU matching; training then
    also refines each camera). In one 200-frame room test: COLMAP 14 min, 20.2 dB; MapAnything 7.4 min, 19.1 dB.
-4. **Splats are trained on the GPU** with gsplat (MCMC, capped splat count, light colour detail), then saved as a
+4. **Splats are trained on the GPU** with gsplat (MCMC, capped splat count, light colour detail). Frames that keep
+   disagreeing with the rest (a clip that jumps or morphs for a moment) are dropped part-way through and listed in
+   `droppedFrames`; splats sitting on top of a camera and huge blurry blobs are removed. The result is saved as a
    compressed **`.spz`** (a room is about 5-15 MB instead of 350-600 MB of `.ply`) plus `<name>.cameras.json`, the
    filmed camera path in three.js coordinates (y up). The splat is already y-up; load it with Spark
    (`new SplatMesh({ url: "room.spz" })`) and start the player at `cameras[0]`.
@@ -183,7 +191,7 @@ Command line:
 
 ```bash
 python -m scene_splat --video walk1.mp4 --video walk2.mp4 --out scenes --name living-room
-python -m scene_splat --capture-image room.png --capture-mode first-last --capture-duration 5s --out scenes --name room
+python -m scene_splat --capture-image room.png --out scenes --name room   # Flux first/last, 5 s turns
 ```
 
 Agent API: `GET /scene/check`, then `POST /generate-scene` and poll `GET /status`:
@@ -196,7 +204,7 @@ curl -X POST http://127.0.0.1:17340/generate-scene -H 'Content-Type: application
 ```
 
 `videoPaths` replaces `imagePath` for your own clips. Other options: `prompt`, `viewPaths` (your own extra views),
-`outputDir`, `fps` (frames taken per second, default 6), `frameWidth`, `steps`, `maxSplats`, `shDegree` (0 or 1),
+`outputDir`, `fps` (frames taken per second, default 10), `frameWidth`, `steps`, `maxSplats`, `shDegree` (0 or 1),
 `device` (e.g. `cuda:1`), `sfm` (`colmap` or `mapanything`), `keepWork`.
 
 ## Portable Windows Build

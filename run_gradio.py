@@ -1125,7 +1125,7 @@ def _agent_scene_args(payload: dict[str, Any]) -> list[str]:
     for v in _payload_value(payload, options, "viewPaths", "views", default=[]) or []:
         args += ["--capture-view", str(Path(str(v)).expanduser().resolve())]
     numeric = {
-        "fps": ("--fps", lambda x: _coerce_float(x, 6.0, 1.0, 30.0)),
+        "fps": ("--fps", lambda x: _coerce_float(x, 10.0, 1.0, 30.0)),
         "frameWidth": ("--width", lambda x: _coerce_int(x, 1280, 480, 3840)),
         "steps": ("--steps", lambda x: _coerce_int(x, 20000, 500, 100000)),
         "maxSplats": ("--max-splats", lambda x: _coerce_int(x, 600000, 10000, 5000000)),

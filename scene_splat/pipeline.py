@@ -7,7 +7,7 @@ from pathlib import Path
 from .frames import extract_frames
 
 
-def run_scene(videos, out_dir, name="scene", fps=6.0, width=1280, steps=20000, max_splats=600_000, sh_degree=1,
+def run_scene(videos, out_dir, name="scene", fps=10.0, width=1280, steps=20000, max_splats=600_000, sh_degree=1,
               keep_work=False, device="cuda", sfm="colmap", progress=lambda msg, frac=None: None) -> dict:
     """Build a .spz splat scene from one or more videos of the same static scene.
 
@@ -74,6 +74,7 @@ def run_scene(videos, out_dir, name="scene", fps=6.0, width=1280, steps=20000, m
         "splats": trained["splats"],
         "sizeBytes": spz.stat().st_size,
         "heldOutPsnr": trained["heldOutPsnr"],
+        "droppedFrames": trained.get("droppedFrames", []),
         "seconds": round(time.time() - t0, 1),
         "settings": {"sfm": sfm, "fps": fps, "width": width, "steps": steps, "maxSplats": max_splats, "shDegree": sh_degree},
     }

@@ -18,7 +18,7 @@ def _checked(make, out: Path, progress, retries=1):
     return clip
 
 
-def capture_room(work: Path, image=None, prompt=None, mode="reference", duration="15s", resolution="1080p",
+def capture_room(work: Path, image=None, prompt=None, mode="first-last", duration="5s", resolution="1080p",
                  views=None, url=None, token=None, progress=lambda m, f=None: None) -> list[Path]:
     """Return the video file(s) to reconstruct from.
 

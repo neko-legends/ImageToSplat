@@ -23,7 +23,9 @@ def build_pairs(names: list[str], window: int = 15) -> list[tuple[str, str]]:
     return sorted(pairs)
 
 
-def reconstruct(work: Path, progress=lambda msg, frac=None: None):
+def reconstruct(work: Path, progress=lambda msg, frac=None: None, per_frame_lens: bool = True):
+    """per_frame_lens: solve focal length and distortion for every frame. AI video zooms while it moves (one Flux
+    segment drifted 28 % in focal length), so a single shared lens bends the scene."""
     import pycolmap
 
     images = work / "images"
@@ -33,11 +35,17 @@ def reconstruct(work: Path, progress=lambda msg, frac=None: None):
     sparse.mkdir(parents=True, exist_ok=True)
 
     progress("Finding features", None)
+    import os
+
+    # COLMAP defaults to one thread per core; with 100+ cores its matcher has crashed with heap corruption
+    # ("corrupted size vs. prev_size"). A bounded pool is just as fast here.
+    threads = min(16, os.cpu_count() or 1)
     extraction = pycolmap.FeatureExtractionOptions()
+    extraction.num_threads = threads
     extraction.sift.max_num_features = 8192
     reader = pycolmap.ImageReaderOptions()
     reader.camera_model = "SIMPLE_RADIAL"
-    pycolmap.extract_features(db, images, camera_mode=pycolmap.CameraMode.SINGLE,
+    pycolmap.extract_features(db, images, camera_mode=pycolmap.CameraMode.PER_IMAGE if per_frame_lens else pycolmap.CameraMode.SINGLE,
                               reader_options=reader, extraction_options=extraction)
 
     names = sorted(p.name for p in images.glob("*.jpg"))
@@ -45,10 +53,15 @@ def reconstruct(work: Path, progress=lambda msg, frac=None: None):
     pair_file = work / "pairs.txt"
     pair_file.write_text("\n".join(f"{a} {b}" for a, b in pairs))
     progress(f"Matching {len(pairs)} frame pairs", None)
-    pycolmap.match_image_pairs(db, pairing_options=pycolmap.ImportedPairingOptions(match_list_path=pair_file))
+    matching = pycolmap.FeatureMatchingOptions()
+    matching.num_threads = threads
+    pycolmap.match_image_pairs(db, matching_options=matching,
+                               pairing_options=pycolmap.ImportedPairingOptions(match_list_path=pair_file))
 
     progress("Solving camera positions", None)
-    models = pycolmap.incremental_mapping(db, images, sparse)
+    mapping = pycolmap.IncrementalPipelineOptions()
+    mapping.num_threads = threads
+    models = pycolmap.incremental_mapping(db, images, sparse, options=mapping)
     if not models:
         raise RuntimeError("Could not work out camera positions. The video needs more texture and overlap between frames.")
     best = max(models.values(), key=lambda m: m.num_reg_images())
@@ -61,6 +74,9 @@ def reconstruct(work: Path, progress=lambda msg, frac=None: None):
     }
     progress(f"Placed {stats['registered']}/{stats['frames']} frames", None)
     undistorted = work / "undistorted"
+    from .level import level
+
+    level(best)
     best_dir = sparse / "best"
     best_dir.mkdir(exist_ok=True)
     best.write(best_dir)
