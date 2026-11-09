@@ -6,3 +6,5 @@ pycolmap>=4.2
 gsplat>=1.5.3
 ninja
 imageio-ffmpeg
+scikit-image
+trimesh

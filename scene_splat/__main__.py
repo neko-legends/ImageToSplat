@@ -49,7 +49,7 @@ def check() -> dict:
     except Exception as exc:
         report["ffmpeg"] = None
         report["ffmpegError"] = str(exc)
-    for mod in ("pycolmap", "torch", "gsplat", "mapanything"):
+    for mod in ("pycolmap", "torch", "gsplat", "mapanything", "skimage", "trimesh"):
         try:
             m = __import__(mod)
             report[mod] = getattr(m, "__version__", "installed")
@@ -81,12 +81,20 @@ def main() -> int:
                     help="Camera solver: COLMAP (CPU) or MapAnything (GPU, needs the mapanything package)")
     ap.add_argument("--keep-work", action="store_true", help="Keep frames and COLMAP files")
     ap.add_argument("--check", action="store_true", help="Report available dependencies and exit")
+    mesh = ap.add_argument_group("Mesh export: turn a splat .ply into a real polygon mesh (.glb with vertex colours)")
+    mesh.add_argument("--mesh", help="Splat .ply or .spz to convert (instead of building a scene)")
+    mesh.add_argument("--mesh-out", help="Output .glb (default: next to the .ply, _mesh.glb)")
+    mesh.add_argument("--mesh-up", default="-y", choices=["y", "-y", "z", "-z"], help="Up axis of the splat (TripoSplat: -y)")
+    mesh.add_argument("--mesh-yaw", type=float, default=-90.0,
+                      help="Turn about the up axis (degrees) so the front faces +z (TripoSplat: -90)")
+    mesh.add_argument("--mesh-grid", type=int, default=256, help="Volume resolution; higher = finer detail and bigger file")
     cap = ap.add_argument_group("Venice capture (instead of --video): needs Venice Media Local with Agent Control on; "
                                 "token from VENICE_MEDIA_LOCAL_TOKEN or ~/.config/venice-media-local/agent.json")
     cap.add_argument("--capture-image", help="Room image to film")
     cap.add_argument("--capture-prompt", help="Describe the room; Venice draws it first")
     cap.add_argument("--capture-view", action="append", default=[], help="Extra view images of the same room (skip auto views)")
-    cap.add_argument("--capture-mode", choices=["first-last", "reference"], default="first-last")
+    cap.add_argument("--capture-mode", choices=["first-last", "reference", "object-spin"], default="first-last",
+                     help="object-spin: one Flux 360 degree orbit around an object image")
     cap.add_argument("--capture-duration", default="5s")
     cap.add_argument("--venice-url", default=None, help="Venice Media Local address (default http://127.0.0.1:9876)")
     a = ap.parse_args()
@@ -94,6 +102,18 @@ def main() -> int:
     if a.check:
         emit(event="check", **check())
         return 0
+    if a.mesh:
+        try:
+            from .mesh import mesh_from_file
+
+            ply = Path(a.mesh).expanduser().resolve()
+            out = Path(a.mesh_out).expanduser().resolve() if a.mesh_out else ply.with_name(ply.stem.removesuffix("_native").removesuffix(".scene") + "_mesh.glb")
+            emit(event="result", **mesh_from_file(ply, out, up=a.mesh_up, yaw=a.mesh_yaw, grid=a.mesh_grid, device=a.device,
+                                                 progress=lambda msg, frac=None: emit(event="progress", message=msg, progress=frac)))
+            return 0
+        except Exception as exc:
+            emit(event="error", error=str(exc), traceback=traceback.format_exc())
+            return 1
     capture = bool(a.capture_image or a.capture_prompt)
     if not a.out or not (a.video or capture):
         ap.error("--out and either --video or --capture-image/--capture-prompt are required")

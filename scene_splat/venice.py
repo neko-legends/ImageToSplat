@@ -16,6 +16,7 @@ IMAGE_MODEL = "gpt-image-2-6-sunburst"
 EDIT_MODEL = "gpt-image-2-6-sunburst-edit"
 REFERENCE_VIDEO_MODEL = "seedance-2-5-reference-to-video-basic"
 FIRST_LAST_VIDEO_MODEL = "flux-3-first-last-frame-to-video"
+SPIN_VIDEO_MODEL = "flux-3-image-to-video"
 FROZEN = ("Frozen moment: nothing in the room moves, no people, the light stays exactly the same. "
           "One continuous take, no cuts, no transitions, no fades. No music. "
           "The lens never zooms: the same wide field of view from the first frame to the last.")
@@ -166,3 +167,10 @@ def walkthrough_prompt(n_views: int) -> str:
 def first_last_prompt() -> str:
     return ("One continuous steady gimbal shot inside this room: the camera, near the middle of the room at eye level, "
             "turns right at a steady brisk pace and drifts slightly sideways until it shows exactly the end frame. " + FROZEN)
+
+
+def object_spin_prompt() -> str:
+    return ("One continuous smooth turntable orbit: the camera circles once all the way around the object (a full 360 "
+            "degrees) at a steady pace, showing its right side, its back, its left side and returning to the front, always "
+            "keeping the whole object centered and fully in frame at the same distance and height. The object stands still "
+            "on the plain background. Nothing moves except the camera. One continuous take, no cuts, no fades, no zoom.")

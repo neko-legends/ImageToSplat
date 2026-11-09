@@ -64,6 +64,7 @@ import { SparkRenderer, SplatMesh } from "@sparkjsdev/spark";
 const params = new URLSearchParams(location.search);
 const plyURL = params.get("ply");
 const camsURL = params.get("cams");  // scene mode: camera path JSON from scene_splat
+const glbURL = params.get("glb");    // mesh export (<name>_mesh.glb): y-up, front facing +z
 
 const loadingEl = document.getElementById("loading");
 const loadLabel = document.getElementById("loading-label");
@@ -75,8 +76,10 @@ function showError(msg) {
   errorEl.textContent = msg;
 }
 
-if (!plyURL) {
-  showError("No ?ply= parameter provided.");
+if (glbURL) {
+  initMesh(glbURL);
+} else if (!plyURL) {
+  showError("No ?ply= or ?glb= parameter provided.");
 } else {
   init(plyURL);
 }
@@ -166,6 +169,42 @@ function init(url) {
 
   // Fallback: hide loading after 4s regardless of bbox-readiness.
   setTimeout(() => { loadingEl.style.display = "none"; }, 4000);
+}
+
+// Mesh mode: a real polygon mesh with vertex colours (unlit: the shading is baked into the colours).
+async function initMesh(url) {
+  const { GLTFLoader } = await import("three/addons/loaders/GLTFLoader.js");
+  const { RoomEnvironment } = await import("three/addons/environments/RoomEnvironment.js");
+  loadLabel.textContent = "Loading mesh…";
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.01, 1000);
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  document.body.appendChild(renderer.domElement);
+  scene.environment = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;  // for lit materials
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.07;
+  new GLTFLoader().load(url, (gltf) => {
+    scene.add(gltf.scene);
+    const box = new THREE.Box3().setFromObject(gltf.scene);
+    const center = box.getCenter(new THREE.Vector3());
+    const radius = box.getSize(new THREE.Vector3()).length() / 2;
+    camera.near = radius / 100; camera.far = radius * 100; camera.updateProjectionMatrix();
+    camera.position.copy(center).add(new THREE.Vector3(0, radius * 0.6, radius * 2.4));
+    controls.target.copy(center);
+    controls.update();
+    loadingEl.style.display = "none";
+    window.splatReady = true;
+  }, undefined, (e) => showError("Mesh failed to load: " + (e.message || e)));
+  window.addEventListener("resize", () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+  renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
 }
 
 // Scene mode: the splat is already y-up. Start at the first filmed camera, drag to look around,

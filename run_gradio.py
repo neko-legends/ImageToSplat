@@ -915,7 +915,7 @@ def _agent_openapi(port: int) -> dict[str, Any]:
                                         "imagePath": {"type": "string", "description": "Room image for Venice capture"},
                                         "prompt": {"type": "string", "description": "Room description for Venice capture"},
                                         "viewPaths": {"type": "array", "items": {"type": "string"}},
-                                        "captureMode": {"type": "string", "enum": ["reference", "first-last"]},
+                                        "captureMode": {"type": "string", "enum": ["reference", "first-last", "object-spin"]},
                                         "captureDuration": {"type": "string", "example": "15s"},
                                         "venice": {"type": "object", "properties": {"url": {"type": "string"}, "token": {"type": "string"}}},
                                         "outputDir": {"type": "string"},
@@ -957,6 +957,7 @@ def _agent_openapi(port: int) -> dict[str, Any]:
                                         "steps": {"type": "integer"},
                                         "guidanceScale": {"type": "number"},
                                         "numGaussians": {"type": "integer"},
+                                        "mesh": {"type": "boolean", "description": "Also export a real polygon mesh (<name>_mesh.glb). Default true."},
                                     },
                                 }
                             }
@@ -1042,6 +1043,7 @@ def _agent_generate_options(payload: dict[str, Any]) -> dict[str, Any]:
         ),
         "output_dir": _payload_value(payload, options, "outputDir", "output_dir"),
         "output_name": _payload_value(payload, options, "outputName", "output_name"),
+        "mesh": _payload_value(payload, options, "mesh", default=True) not in (False, "false", "0", 0),
     }
 
 
@@ -1166,6 +1168,7 @@ def _run_agent_job(job_id: str, action: str, payload: dict[str, Any]) -> None:
                 output_name=request["output_name"],
                 job_id=job_id,
                 progress_callback=lambda message, value: _agent_progress(job_id, message, value),
+                mesh=request["mesh"],
             )
         elif action == "scene":
             result = _run_scene_worker(
@@ -1410,6 +1413,7 @@ def _run_headless(args: argparse.Namespace) -> int:
         num_gaussians=args.num_gaussians,
         output_dir=args.output_dir,
         output_name=args.output_name,
+        mesh=not args.no_mesh,
         progress_callback=lambda message, value: print(
             json.dumps({"event": "progress", "message": message, "progress": value}),
             flush=True,
@@ -1435,6 +1439,7 @@ def _cli_parser() -> argparse.ArgumentParser:
     parser.add_argument("--steps", type=int, default=20)
     parser.add_argument("--guidance-scale", type=float, default=3.0)
     parser.add_argument("--num-gaussians", type=int, default=262144)
+    parser.add_argument("--no-mesh", action="store_true", help="Skip the polygon mesh export (<name>_mesh.glb).")
     return parser
 
 
@@ -1533,8 +1538,12 @@ def run_generation_core(
     output_name: str | None = None,
     job_id: str | None = None,
     progress_callback=None,
+    mesh: bool = True,
 ) -> dict[str, Any]:
-    """Run TripoSplat once and write every supported export format."""
+    """Run TripoSplat once and write every supported export format.
+
+    mesh: also convert the splat into a real polygon mesh (<name>_mesh.glb, vertex colours) with the scene worker
+    (needs gsplat, scikit-image and trimesh). A failed mesh export is reported but does not fail the job."""
     input_image = _load_input_image(image)
     seed = _coerce_int(seed, 42, 0, 2**31 - 1)
     steps = _coerce_int(steps, 20, 1, 50)
@@ -1572,6 +1581,17 @@ def run_generation_core(
     export_paths = _export_common_formats(gaussian, out_dir, output_name)
     prepared.save(export_paths["prepared"])
 
+    mesh_error = None
+    if mesh:
+        report("Building a 3D mesh", 0.9)
+        try:
+            built = _run_scene_worker(["--mesh", str(export_paths["ply"])],
+                                      progress_callback=lambda m, p: report(m, 0.9 + 0.1 * (p or 0)))
+            export_paths["mesh"] = Path(built["glb"])
+        except Exception as exc:
+            mesh_error = str(exc)
+            report(f"Mesh export failed: {mesh_error}", None)
+
     report("Finished", 1.0)
     gaussian_count = int(gaussian.get_xyz.shape[0])
     return {
@@ -1581,6 +1601,7 @@ def run_generation_core(
         "gaussianCount": gaussian_count,
         "generationSeconds": round(gen_dt, 3),
         "paths": _path_map(export_paths),
+        "meshError": mesh_error,
         "settings": {
             "seed": seed,
             "steps": steps,

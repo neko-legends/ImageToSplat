@@ -337,9 +337,24 @@ input[type="range"] {
 }
 
 .preview-stage {
+  position: relative;
   min-width: 0;
   min-height: 0;
   background: #07090c;
+}
+
+.preview-toggle {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 2;
+  display: flex;
+  gap: 6px;
+}
+
+.preview-toggle button.active {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .preview-stage iframe {

@@ -24,6 +24,7 @@ def capture_room(work: Path, image=None, prompt=None, mode="first-last", duratio
 
     mode "reference": one Seedance 2.5 reference-to-video spin through all views (one clip).
     mode "first-last": Flux 3 first/last-frame clips between neighbouring views, closing the loop (one clip per view).
+    mode "object-spin": one Flux 3 image-to-video 360 degree orbit around an object (one clip, 10 s, square).
     `views` may list extra view images to use instead of generating them.
     """
     work.mkdir(parents=True, exist_ok=True)
@@ -37,6 +38,11 @@ def capture_room(work: Path, image=None, prompt=None, mode="first-last", duratio
             "everywhere, no people.", work / "view1.png")
     else:
         raise ValueError("Give an image or a prompt for the room.")
+    if mode == "object-spin":
+        progress("Venice is filming a 360 degree orbit", None)
+        return [_checked(lambda out: vml.video(venice.SPIN_VIDEO_MODEL, venice.object_spin_prompt(), out, source=source,
+                                               duration="10s", resolution=resolution, aspect="1:1", progress=progress),
+                         work / "spin360.mp4", progress)]
     room = [source] + [Path(v).expanduser().resolve() for v in views] if views else venice.room_views(vml, source, work, progress)
 
     if mode == "reference":

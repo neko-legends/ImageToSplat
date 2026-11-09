@@ -127,13 +127,14 @@ export default function App() {
   const [message, setMessage] = useState('Starting local service')
   const [polling, setPolling] = useState(false)
   const [viewerSrc, setViewerSrc] = useState('')
+  const [previewKind, setPreviewKind] = useState<'splat' | 'mesh'>('splat')
   const [preparedSrc, setPreparedSrc] = useState('')
   const [mode, setMode] = useState<Mode>('image')
   const [captureSource, setCaptureSource] = useState<CaptureSource>('videos')
   const [videoPaths, setVideoPaths] = useState<string[]>([])
   const [roomImage, setRoomImage] = useState('')
   const [roomPrompt, setRoomPrompt] = useState('')
-  const [captureMode, setCaptureMode] = useState<'first-last' | 'reference'>('first-last')
+  const [captureMode, setCaptureMode] = useState<'first-last' | 'reference' | 'object-spin'>('first-last')
   const [veniceToken, setVeniceToken] = useState('')
   const [maxSplats, setMaxSplats] = useState(600000)
   const [sceneSteps, setSceneSteps] = useState(20000)
@@ -274,7 +275,7 @@ export default function App() {
       if (captureSource === 'image') body.imagePath = roomImage.trim()
       else body.prompt = roomPrompt.trim()
       body.captureMode = captureMode
-      body.captureDuration = captureMode === 'first-last' ? '5s' : '15s'
+      body.captureDuration = captureMode === 'first-last' ? '5s' : captureMode === 'object-spin' ? '10s' : '15s'
       if (veniceToken.trim()) body.venice = { token: veniceToken.trim() }
     }
     try {
@@ -383,11 +384,16 @@ export default function App() {
       const { convertFileSrc } = await import('@tauri-apps/api/core')
       const prepared = generation.paths.prepared
       const ply = generation.paths.ply
+      const mesh = generation.paths.mesh
       setPreparedSrc(prepared ? convertFileSrc(prepared) : '')
+      if (previewKind === 'mesh' && mesh) {
+        setViewerSrc(`/viewer/viewer.html?glb=${encodeURIComponent(convertFileSrc(mesh))}&ts=${Date.now()}`)
+        return
+      }
       setViewerSrc(ply ? `/viewer/viewer.html?ply=${encodeURIComponent(convertFileSrc(ply))}&ts=${Date.now()}` : '')
     }
     updatePreview().catch((error) => setMessage(`Preview failed: ${formatError(error)}`))
-  }, [generation, sceneResult, tauri])
+  }, [generation, sceneResult, tauri, previewKind])
 
   return (
     <div className="app-shell">
@@ -492,8 +498,9 @@ export default function App() {
               <>
                 <label className="field">
                   <span>Video</span>
-                  <select value={captureMode} onChange={(event) => setCaptureMode(event.target.value as 'first-last' | 'reference')}>
+                  <select value={captureMode} onChange={(event) => setCaptureMode(event.target.value as 'first-last' | 'reference' | 'object-spin')}>
                     <option value="first-last">Flux 3 view-to-view</option>
+                    <option value="object-spin">Flux 3 360 orbit (object)</option>
                     <option value="reference">Seedance 2.5 one spin</option>
                   </select>
                 </label>
@@ -655,6 +662,16 @@ export default function App() {
 
         <section className="preview-layout">
           <div className="preview-stage">
+            {generation?.paths?.mesh && !sceneResult && (
+              <div className="preview-toggle">
+                <button type="button" className={previewKind === 'splat' ? 'active' : ''} onClick={() => setPreviewKind('splat')}>
+                  Splat
+                </button>
+                <button type="button" className={previewKind === 'mesh' ? 'active' : ''} onClick={() => setPreviewKind('mesh')}>
+                  Mesh (.glb)
+                </button>
+              </div>
+            )}
             {viewerSrc ? (
               <iframe src={viewerSrc} title="Gaussian splat preview" />
             ) : (

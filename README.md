@@ -65,12 +65,49 @@ Gaussian splat viewer, first-launch Setup popup for downloading the expected
 TripoSplat `.safetensors` files, and export buttons for:
 
 - Native Gaussian splat formats: `.ply`, `.splat`
-- Common point-cloud conversions: `.glb`, glTF `.zip`, `.obj`, `.fbx`
+- **A real polygon mesh: `<name>_mesh.glb`** (see below)
+- Point-cloud conversions of the splat centres: `.glb`, glTF `.zip`, `.obj`, `.fbx`
 
-Note: TripoSplat generates Gaussian splats rather than a polygon mesh. The
-`.ply` and `.splat` files preserve the native result; glTF/GLB/OBJ/FBX exports
-store the splat centers and colors as point-cloud assets for broader 3D-tool
-compatibility.
+The preview switches between **Splat** and **Mesh (.glb)**.
+
+### Real 3D mesh export
+
+TripoSplat makes Gaussian splats, not polygons, so the app also turns every result into an ordinary mesh that
+Blender, game engines and three.js (`GLTFLoader`) can open:
+
+1. the splat is rendered (colour and depth) from 128 directions around the object;
+2. the depth maps are fused into a signed-distance volume (TSDF, 256³), with the silhouettes carving away empty space;
+3. marching cubes extracts the surface, small floating pieces are dropped;
+4. each vertex takes the average colour of the views that see it head-on.
+
+The `.glb` is y-up, stands on y = 0 with its front facing +z, and uses an unlit material
+(`KHR_materials_unlit`): the colours already contain the shading and highlights of the source image, so lighting
+them again would wash them out. About 8 s and 10 MB (500k triangles) per object. It needs the scene worker
+packages (gsplat, scikit-image, trimesh; see [Scene requirements](#scene-requirements)); without them the job still
+finishes and reports `meshError`. Turn it off with `"mesh": false` in the API or `--no-mesh` on the command line.
+Convert any splat yourself:
+
+```bash
+python -m scene_splat --mesh chest_native.ply                  # -> chest_mesh.glb
+python -m scene_splat --mesh scene.spz --mesh-up y --mesh-yaw 0  # a .spz from scene mode (already y-up)
+```
+
+Limits: thin parts (cloth, hair, leaves) can close up or get holes, and there is no texture atlas, so detail is
+limited by the vertex density (`--mesh-grid 384` for finer detail and a bigger file).
+
+### Single image or video? (objects)
+
+![Treasure chest: single image vs Flux 360 video](static/doc/chest_compare.webp)
+
+One stylized chest drawn with `gpt-image-2-6-sunburst`, turned into 3D three ways:
+
+- **Single image → splat (TripoSplat)**: 28 s, clean from every side, and the result to use for objects. It invents
+  the back (here it repeated the front ornament) and is a little softer and less shiny than the image.
+- **Single image → mesh**: the same model as a `.glb`, nearly identical to the splat.
+- **Flux 3 360 orbit video → splat** (`captureMode: "object-spin"`, then COLMAP and gsplat as in scene mode): 26
+  minutes, 25.7 dB on held-back frames. Seen from the filmed path it is sharper and shinier, with a real wood back,
+  but Flux re-draws the object while it turns (the chest got wider), and from any camera position the video never
+  used it shows smears and floaters. Use it when the object will only be seen from about where it was filmed.
 
 ## AI Agent Control and Headless Mode
 

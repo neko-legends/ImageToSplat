@@ -59,3 +59,46 @@ def write_spz(path, means, log_scales, quats_wxyz, opacity_logits, sh0, shN=None
     with gzip.open(path, "wb", compresslevel=9) as f:
         f.write(np.concatenate(parts).tobytes())
     return n
+
+
+def read_spz(path) -> dict:
+    """Read a v2/v3 .spz back into 3DGS arrays: means, log_scales, quats_wxyz, opacities (0..1), sh0 (DC), sh_degree."""
+    with gzip.open(path, "rb") as f:
+        raw = np.frombuffer(f.read(), np.uint8)
+    magic, version, n = (int(np.frombuffer(raw[i:i + 4].tobytes(), np.uint32)[0]) for i in (0, 4, 8))
+    if magic != SPZ_MAGIC or version not in (2, 3):
+        raise ValueError(f"Not a supported .spz file (magic {magic:#x}, version {version})")
+    sh_degree, frac = int(raw[12]), int(raw[13])
+    o = 16
+    pos = raw[o:o + 9 * n].reshape(n, 3, 3).astype(np.int32)
+    o += 9 * n
+    fixed = pos[..., 0] | (pos[..., 1] << 8) | (pos[..., 2] << 16)
+    fixed = np.where(fixed & 0x800000, fixed - (1 << 24), fixed)
+    means = fixed.astype(np.float32) / (1 << frac)
+    alpha = raw[o:o + n].astype(np.float32) / 255
+    o += n
+    rgb = raw[o:o + 3 * n].reshape(n, 3).astype(np.float32)
+    o += 3 * n
+    log_scales = raw[o:o + 3 * n].reshape(n, 3).astype(np.float32) / 16 - 10
+    o += 3 * n
+    if version == 3:
+        b = raw[o:o + 4 * n].reshape(n, 4).astype(np.uint32)
+        o += 4 * n
+        comp = b[:, 0] | (b[:, 1] << 8) | (b[:, 2] << 16) | (b[:, 3] << 24)
+        largest = (comp >> 30).astype(np.int64)
+        q = np.zeros((n, 4), np.float32)
+        others = np.array([[j for j in range(4) if j != k] for k in range(4)])[largest]
+        for c in range(3):
+            chunk = (comp >> (10 * (2 - c))) & 1023
+            v = (chunk & 511).astype(np.float32) / 511 * np.sqrt(0.5)
+            v = np.where(chunk & 512, -v, v)
+            q[np.arange(n), others[:, c]] = v
+        q[np.arange(n), largest] = np.sqrt(np.clip(1 - (q ** 2).sum(1), 0, 1))
+        quats_xyzw = q
+    else:
+        xyz = raw[o:o + 3 * n].reshape(n, 3).astype(np.float32) / 127.5 - 1
+        o += 3 * n
+        quats_xyzw = np.c_[xyz, np.sqrt(np.clip(1 - (xyz ** 2).sum(1), 0, 1))]
+    sh0 = (rgb / 255 - 0.5) / 0.15
+    return {"means": means, "log_scales": log_scales, "quats_wxyz": quats_xyzw[:, [3, 0, 1, 2]], "opacities": alpha,
+            "sh0": sh0, "sh_degree": sh_degree}
