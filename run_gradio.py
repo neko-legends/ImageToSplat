@@ -912,6 +912,9 @@ def _agent_openapi(port: int) -> dict[str, Any]:
             "/status": {"get": {"summary": "Check active and last job status"}},
             "/models": {"get": {"summary": "Check model setup status"}},
             "/setup": {"post": {"summary": "Download missing TripoSplat model files"}},
+            "/mesh": {"post": {"summary": "Rebuild the textured mesh (.glb) of a splat with other options. Body: plyPath "
+                                          "(default: the last generated splat), meshDetail (auto/low/medium/high), "
+                                          "meshFaces, meshTexture, outputPath. Poll /status."}},
             "/scene/check": {"get": {"summary": "Check scene-mode dependencies (ffmpeg, pycolmap, CUDA torch, gsplat)"}},
             "/generate-scene": {
                 "post": {
@@ -971,7 +974,9 @@ def _agent_openapi(port: int) -> dict[str, Any]:
                                         "guidanceScale": {"type": "number"},
                                         "numGaussians": {"type": "integer"},
                                         "mesh": {"type": "boolean", "description": "Also export a real polygon mesh (<name>_mesh.glb). Default true."},
-                                        "meshTexture": {"type": "integer", "description": "Mesh texture size, default 2048; 0 = colour per vertex, no texture."},
+                                        "meshDetail": {"type": "string", "enum": ["auto", "low", "medium", "high"], "description": "low 5k triangles + 1024 texture, medium 25k + 2048, high 100k + 2048, auto (default) = fewest triangles that keep the shape."},
+                                        "meshFaces": {"type": "integer", "description": "Exact triangle count instead of the preset."},
+                                        "meshTexture": {"type": "integer", "description": "Texture size instead of the preset's; 0 = colour per vertex, no texture."},
                                     },
                                 }
                             }
@@ -1058,7 +1063,7 @@ def _agent_generate_options(payload: dict[str, Any]) -> dict[str, Any]:
         "output_dir": _payload_value(payload, options, "outputDir", "output_dir"),
         "output_name": _payload_value(payload, options, "outputName", "output_name"),
         "mesh": _payload_value(payload, options, "mesh", default=True) not in (False, "false", "0", 0),
-        "mesh_texture": _coerce_int(_payload_value(payload, options, "meshTexture", "mesh_texture", default=2048), 2048, 0, 8192),
+        **_agent_mesh_options(payload),
     }
 
 
@@ -1184,8 +1189,12 @@ def _run_agent_job(job_id: str, action: str, payload: dict[str, Any]) -> None:
                 job_id=job_id,
                 progress_callback=lambda message, value: _agent_progress(job_id, message, value),
                 mesh=request["mesh"],
+                mesh_detail=request["mesh_detail"],
+                mesh_faces=request["mesh_faces"],
                 mesh_texture=request["mesh_texture"],
             )
+        elif action == "mesh":
+            result = rebuild_mesh(payload, progress_callback=lambda message, value: _agent_progress(job_id, message, value))
         elif action == "scene":
             result = _run_scene_worker(
                 _agent_scene_args(payload),
@@ -1307,6 +1316,9 @@ class AgentApiHandler(BaseHTTPRequestHandler):
                 self._send_json(200, _start_agent_job("setup", payload))
             elif path == "/generate":
                 self._send_json(200, _start_agent_job("generate", payload))
+            elif path == "/mesh":
+                _agent_mesh_options(payload)  # validate before queueing
+                self._send_json(200, _start_agent_job("mesh", payload))
             elif path == "/generate-scene":
                 _agent_scene_args(payload)  # validate before queueing
                 self._send_json(200, _start_agent_job("scene", payload))
@@ -1430,6 +1442,8 @@ def _run_headless(args: argparse.Namespace) -> int:
         output_dir=args.output_dir,
         output_name=args.output_name,
         mesh=not args.no_mesh,
+        mesh_detail=args.mesh_detail,
+        mesh_faces=args.mesh_faces,
         progress_callback=lambda message, value: print(
             json.dumps({"event": "progress", "message": message, "progress": value}),
             flush=True,
@@ -1456,6 +1470,8 @@ def _cli_parser() -> argparse.ArgumentParser:
     parser.add_argument("--guidance-scale", type=float, default=3.0)
     parser.add_argument("--num-gaussians", type=int, default=262144)
     parser.add_argument("--no-mesh", action="store_true", help="Skip the polygon mesh export (<name>_mesh.glb).")
+    parser.add_argument("--mesh-detail", default="auto", choices=list(MESH_DETAILS), help="Mesh detail preset.")
+    parser.add_argument("--mesh-faces", type=int, default=0, help="Exact mesh triangle count instead of the preset.")
     return parser
 
 
@@ -1543,6 +1559,61 @@ def _path_map(paths: dict[str, Path]) -> dict[str, str]:
     return {key: str(path) for key, path in paths.items()}
 
 
+MESH_DETAILS = ("auto", "low", "medium", "high")
+_LAST_GENERATION: dict[str, Any] | None = None
+
+
+def build_mesh(ply: Path, detail: str = "auto", faces: int = 0, texture: int | None = None, out: Path | None = None,
+               progress_callback=None) -> dict[str, Any]:
+    """Splat .ply -> textured .glb with the scene worker. Returns glb, faces, vertices, texture, detail, sizeBytes."""
+    if detail not in MESH_DETAILS:
+        raise ValueError(f"meshDetail must be one of {', '.join(MESH_DETAILS)}")
+    args = ["--mesh", str(ply), "--mesh-detail", detail]
+    if faces:
+        args += ["--mesh-faces", str(_coerce_int(faces, 0, 500, 2_000_000))]
+    if texture is not None:
+        args += ["--mesh-texture", str(_coerce_int(texture, 2048, 0, 8192))]
+    if out:
+        args += ["--mesh-out", str(out)]
+    return _run_scene_worker(args, progress_callback=progress_callback)
+
+
+def rebuild_mesh(payload: dict[str, Any], progress_callback=None) -> dict[str, Any]:
+    """Agent job: make the mesh again with other options, from a splat .ply (default: the last generated one)."""
+    options = _agent_mesh_options(payload)
+    last = _LAST_GENERATION
+    ply = _payload_value(payload, _nested_options(payload), "plyPath", "ply_path", "splatPath")
+    if not ply and last:
+        ply = last["paths"]["ply"]
+    if not ply:
+        raise ValueError("Request body must include plyPath (no splat was generated in this session).")
+    ply = Path(str(ply)).expanduser().resolve()
+    if not ply.is_file():
+        raise FileNotFoundError(f"Splat not found: {ply}")
+    out = _payload_value(payload, _nested_options(payload), "outputPath", "output_path")
+    info = build_mesh(ply, options["mesh_detail"], options["mesh_faces"], options["mesh_texture"],
+                      Path(str(out)).expanduser().resolve() if out else None, progress_callback)
+    same = bool(last and Path(last["paths"]["ply"]) == ply)
+    result = dict(last) if same else {"ok": True, "outputDir": str(ply.parent), "gaussianCount": 0,
+                                      "generationSeconds": 0.0, "paths": {"ply": str(ply)}, "settings": {}}
+    result["paths"] = {**result["paths"], "mesh": info["glb"]}
+    result["mesh"], result["meshError"] = info, None
+    return result
+
+
+def _agent_mesh_options(payload: dict[str, Any]) -> dict[str, Any]:
+    options = _nested_options(payload)
+    detail = str(_payload_value(payload, options, "meshDetail", "mesh_detail", default="auto")).lower()
+    if detail not in MESH_DETAILS:
+        raise ValueError(f"meshDetail must be one of {', '.join(MESH_DETAILS)}")
+    texture = _payload_value(payload, options, "meshTexture", "mesh_texture")
+    return {
+        "mesh_detail": detail,
+        "mesh_faces": _coerce_int(_payload_value(payload, options, "meshFaces", "mesh_faces", default=0), 0, 0, 2_000_000),
+        "mesh_texture": None if texture in (None, "") else _coerce_int(texture, 2048, 0, 8192),
+    }
+
+
 def run_generation_core(
     image,
     *,
@@ -1555,13 +1626,16 @@ def run_generation_core(
     job_id: str | None = None,
     progress_callback=None,
     mesh: bool = True,
-    mesh_texture: int = 2048,
+    mesh_detail: str = "auto",
+    mesh_faces: int = 0,
+    mesh_texture: int | None = None,
 ) -> dict[str, Any]:
     """Run TripoSplat once and write every supported export format.
 
-    mesh: also convert the splat into a real polygon mesh (<name>_mesh.glb) with the scene worker (needs gsplat,
-    scikit-image, trimesh, xatlas, fast-simplification). mesh_texture: texture size (2048 = 100k triangles and a
-    2048x2048 JPEG texture; 0 = full-resolution mesh with a colour per vertex). A failed mesh export is reported but
+    mesh: also convert the splat into a real textured polygon mesh (<name>_mesh.glb) with the scene worker (needs
+    gsplat, scikit-image, trimesh, xatlas, fast-simplification). mesh_detail: "low" (5k triangles), "medium" (25k),
+    "high" (100k) or "auto" (fewest triangles that keep the shape); mesh_faces: exact triangle count instead;
+    mesh_texture: texture size instead of the preset's (0 = colour per vertex). A failed mesh export is reported but
     does not fail the job."""
     input_image = _load_input_image(image)
     seed = _coerce_int(seed, 42, 0, 2**31 - 1)
@@ -1601,19 +1675,21 @@ def run_generation_core(
     prepared.save(export_paths["prepared"])
 
     mesh_error = None
+    mesh_info = None
     if mesh:
         report("Building a 3D mesh", 0.9)
         try:
-            built = _run_scene_worker(["--mesh", str(export_paths["ply"]), "--mesh-texture", str(int(mesh_texture))],
-                                      progress_callback=lambda m, p: report(m, 0.9 + 0.1 * (p or 0)))
-            export_paths["mesh"] = Path(built["glb"])
+            mesh_info = build_mesh(export_paths["ply"], mesh_detail, mesh_faces, mesh_texture,
+                                   progress_callback=lambda m, p: report(m, 0.9 + 0.1 * (p or 0)))
+            export_paths["mesh"] = Path(mesh_info["glb"])
         except Exception as exc:
             mesh_error = str(exc)
             report(f"Mesh export failed: {mesh_error}", None)
 
     report("Finished", 1.0)
     gaussian_count = int(gaussian.get_xyz.shape[0])
-    return {
+    global _LAST_GENERATION
+    _LAST_GENERATION = {
         "ok": True,
         "jobId": job_id,
         "outputDir": str(out_dir),
@@ -1621,6 +1697,7 @@ def run_generation_core(
         "generationSeconds": round(gen_dt, 3),
         "paths": _path_map(export_paths),
         "meshError": mesh_error,
+        "mesh": mesh_info,
         "settings": {
             "seed": seed,
             "steps": steps,
@@ -1628,6 +1705,7 @@ def run_generation_core(
             "numGaussians": num_gaussians,
         },
     }
+    return _LAST_GENERATION
 
 
 # ----------------------------------------------------------------------------

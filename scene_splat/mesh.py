@@ -12,6 +12,56 @@ from pathlib import Path
 import numpy as np
 
 UPS = {"y": (0, 1, 0), "-y": (0, -1, 0), "z": (0, 0, 1), "-z": (0, 0, -1)}
+# detail preset -> (triangles, texture size)
+DETAIL = {"low": (5_000, 1024), "medium": (25_000, 2048), "high": (100_000, 2048)}
+AUTO_STEPS = (3_000, 6_000, 12_000, 25_000, 50_000, 100_000)
+AUTO_TOLERANCE = 0.003  # auto: 95 % of the surface stays within this fraction of the object's size
+
+
+def _point_triangle_distance(p, a, b, c):
+    """Distance from points p to triangles (a, b, c); all (M, 3). Closest-point regions as in Ericson."""
+    ab, ac, ap = b - a, c - a, p - a
+    d1, d2 = (ab * ap).sum(-1), (ac * ap).sum(-1)
+    bp = p - b
+    d3, d4 = (ab * bp).sum(-1), (ac * bp).sum(-1)
+    cp = p - c
+    d5, d6 = (ab * cp).sum(-1), (ac * cp).sum(-1)
+    va, vb, vc = d3 * d6 - d5 * d4, d5 * d2 - d1 * d6, d1 * d4 - d3 * d2
+    with np.errstate(divide="ignore", invalid="ignore"):
+        den = 1.0 / (va + vb + vc)
+        q = a + ab * (vb * den)[:, None] + ac * (vc * den)[:, None]
+        w = ((d4 - d3) / ((d4 - d3) + (d5 - d6)))[:, None]
+        q = np.where(((va <= 0) & (d4 - d3 >= 0) & (d5 - d6 >= 0))[:, None], b + w * (c - b), q)
+        q = np.where(((vb <= 0) & (d2 >= 0) & (d6 <= 0))[:, None], a + (d2 / (d2 - d6))[:, None] * ac, q)
+        q = np.where(((d6 >= 0) & (d5 <= d6))[:, None], c, q)
+        q = np.where(((vc <= 0) & (d1 >= 0) & (d3 <= 0))[:, None], a + (d1 / (d1 - d3))[:, None] * ab, q)
+    q = np.where(((d3 >= 0) & (d4 <= d3))[:, None], b, q)
+    q = np.where(((d1 <= 0) & (d2 <= 0))[:, None], a, q)
+    return np.linalg.norm(np.nan_to_num(q, nan=1e9) - p, axis=1)
+
+
+def _surface_error(points, vertices, faces, k=12):
+    """95th percentile distance from `points` (on the full-detail surface) to a simplified mesh."""
+    from scipy.spatial import cKDTree
+
+    tri = vertices[faces]
+    k = min(k, len(faces))
+    _, near = cKDTree(tri.mean(1)).query(points, k=k, workers=-1)
+    near = near.reshape(len(points), k)
+    best = np.full(len(points), np.inf)
+    for j in range(k):
+        t = tri[near[:, j]]
+        best = np.minimum(best, _point_triangle_distance(points, t[:, 0], t[:, 1], t[:, 2]))
+    return float(np.percentile(best, 95))
+
+
+def _simplify(mesh, target):
+    import fast_simplification
+    import trimesh
+
+    sv, sf = fast_simplification.simplify(mesh.vertices.astype(np.float32), mesh.faces.astype(np.int32),
+                                          target_reduction=1 - target / len(mesh.faces))
+    return trimesh.Trimesh(sv, sf, process=True)
 
 
 def load_ply(path: Path) -> dict:
@@ -77,12 +127,15 @@ def mesh_from_ply(ply: Path, out: Path, up="-y", **kw) -> dict:
 
 
 def splat_to_mesh(means, quats_wxyz, scales, opacities, sh0, out: Path, up="-y", yaw=0.0, grid=256, views=128, size=512,
-                  texture=0, faces=0, device="cuda", progress=lambda msg, frac=None: None) -> dict:
+                  detail="high", texture=None, faces=0, device="cuda", progress=lambda msg, frac=None: None) -> dict:
     """means/quats/scales (linear)/opacities (0..1)/sh0 (DC coefficients). `up` is the splat's up axis; the .glb is
     written y-up (then turned `yaw` degrees about y, so the front faces +z as glTF expects) with the object standing on
     y = 0, centred in x and z.
-    texture: 0 = colour per vertex; N = simplify the mesh, unwrap it (xatlas) and bake an N x N JPEG texture.
-    faces: simplify to about this many triangles (0 = keep all; textured meshes default to 100k)."""
+    detail: "low" (5k triangles, 1024 texture), "medium" (25k, 2048), "high" (100k, 2048) or "auto": the fewest
+    triangles (3k-100k) that keep 95 % of the surface within 0.3 % of the object's size, so a plain shape gets few
+    triangles and a busy one many.
+    faces: exact triangle target instead of the preset's. texture: texture size instead of the preset's; 0 = no
+    texture, a colour per vertex (and no simplification unless `faces` is given)."""
     import torch
     import torch.nn.functional as F
     import trimesh
@@ -90,7 +143,7 @@ def splat_to_mesh(means, quats_wxyz, scales, opacities, sh0, out: Path, up="-y",
     from skimage.measure import marching_cubes
 
     t0 = time.time()
-    target_faces = faces
+    target_faces = custom_faces = int(faces or 0)
     t = lambda a: torch.as_tensor(np.array(a), dtype=torch.float32, device=device)
     means, quats, scales, op, sh = t(means), F.normalize(t(quats_wxyz), dim=-1), t(scales), t(opacities), t(sh0)[:, None]
     solid = op > 0.3
@@ -155,15 +208,30 @@ def splat_to_mesh(means, quats_wxyz, scales, opacities, sh0, out: Path, up="-y",
     if (mesh.vertex_normals * (mesh.vertices - mesh.vertices.mean(0))).sum(1).mean() < 0:
         mesh = trimesh.Trimesh(mesh.vertices, mesh.faces[:, ::-1], process=False)  # normals point outwards
 
-    if texture and not target_faces:
-        target_faces = 100_000
-    if target_faces and len(mesh.faces) > target_faces * 1.05:
-        import fast_simplification
-
-        progress("Simplifying the mesh", 0.7)
-        sv, sf = fast_simplification.simplify(mesh.vertices.astype(np.float32), mesh.faces.astype(np.int32),
-                                              target_reduction=1 - target_faces / len(mesh.faces))
-        mesh = trimesh.Trimesh(sv, sf, process=True)
+    if detail not in DETAIL and detail != "auto":
+        raise ValueError(f"Unknown mesh detail: {detail} (low, medium, high or auto)")
+    if texture is None:
+        texture = DETAIL.get(detail, DETAIL["high"])[1]
+    full = mesh
+    size_ = float(np.linalg.norm(full.bounds[1] - full.bounds[0]))
+    probe = full.vertices[np.random.default_rng(0).choice(len(full.vertices), min(20000, len(full.vertices)), replace=False)]
+    error = 0.0
+    if not target_faces and texture and detail == "auto":
+        progress("Choosing the triangle count", 0.7)
+        for target_faces in AUTO_STEPS:
+            if target_faces >= len(full.faces):
+                break
+            mesh = _simplify(full, target_faces)
+            error = _surface_error(probe, mesh.vertices, mesh.faces)
+            if error <= AUTO_TOLERANCE * size_:
+                break
+    else:
+        if not target_faces and texture:
+            target_faces = DETAIL[detail][0]
+        if target_faces and len(full.faces) > target_faces * 1.05:
+            progress("Simplifying the mesh", 0.7)
+            mesh = _simplify(full, target_faces)
+            error = _surface_error(probe, mesh.vertices, mesh.faces)
 
     def place(vertices):
         """y-up, front +z, standing on y = 0, centred in x and z."""
@@ -188,10 +256,11 @@ def splat_to_mesh(means, quats_wxyz, scales, opacities, sh0, out: Path, up="-y",
     out.parent.mkdir(parents=True, exist_ok=True)
     if texture:
         progress("Unwrapping the mesh", 0.75)
-        tex, uv, vmap, tris = _bake_texture(mesh, texture, dirs, c, dist, U, means, quats, scales, op, sh, fov, vs,
+        tex, uv, vmap, tris = _bake_texture(mesh, full, texture, dirs, c, dist, U, means, quats, scales, op, sh, fov, vs,
                                             device, progress)
         _write_textured_glb(place(mesh.vertices[vmap]), uv, tris, tex, out)
         return {"glb": str(out), "vertices": int(len(vmap)), "faces": int(len(tris)), "texture": texture,
+                "detail": "custom" if custom_faces else detail, "surfaceError": round(error / size_, 5),
                 "sizeBytes": out.stat().st_size, "seconds": round(time.time() - t0, 1)}
 
     progress("Colouring the mesh", 0.8)
@@ -213,8 +282,10 @@ def splat_to_mesh(means, quats_wxyz, scales, opacities, sh0, out: Path, up="-y",
             "seconds": round(time.time() - t0, 1)}
 
 
-def _bake_texture(mesh, size, dirs, c, dist, U, means, quats, scales, op, sh, fov, vs, device, progress, render=1024):
-    """xatlas unwrap, then every texel takes the colour of the splat renders that see its surface point head-on."""
+def _bake_texture(mesh, full, size, dirs, c, dist, U, means, quats, scales, op, sh, fov, vs, device, progress, render=1024):
+    """xatlas unwrap, then every texel takes the colour of the splat renders that see its surface point head-on.
+    Each texel is first moved from the simplified mesh onto the full-detail surface (`full`), so a low-poly mesh gets
+    the same texture detail as a dense one."""
     import torch
     import torch.nn.functional as F
     import xatlas
@@ -258,6 +329,16 @@ def _bake_texture(mesh, size, dirs, c, dist, U, means, quats, scales, op, sh, fo
         filled[idx] = True
     tex_idx = torch.where(filled)[0]
     X, N = pos[tex_idx], nrm[tex_idx]
+    from scipy.spatial import cKDTree
+
+    full_v = np.asarray(full.vertices, dtype=np.float32)
+    full_n = torch.tensor(np.asarray(full.vertex_normals), dtype=torch.float32, device=device)
+    _, near = cKDTree(full_v).query(X.cpu().numpy(), k=4, workers=-1)
+    near = torch.tensor(near, device=device)
+    agree = (full_n[near] * N[:, None]).sum(-1) > 0.2  # prefer a full-detail point facing the same way (thin walls)
+    pick = near[torch.arange(len(near), device=device), agree.float().argmax(1)]
+    hv, N = torch.tensor(full_v, device=device)[pick], full_n[pick]
+    X = X + N * ((hv - X) * N).sum(1, keepdim=True)
 
     progress("Baking the texture", 0.8)
     f = render / 2 / math.tan(fov / 2)

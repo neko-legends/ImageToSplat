@@ -523,3 +523,9 @@ textarea.path-input {
   resize: vertical;
   font: inherit;
 }
+
+.mesh-note {
+  margin: 0 0 10px;
+  color: var(--muted, #9aa4b2);
+  font-size: 12px;
+}

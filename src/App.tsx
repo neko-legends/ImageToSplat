@@ -78,6 +78,8 @@ type GenerationResult = {
   gaussianCount: number
   generationSeconds: number
   paths: Record<string, string>
+  mesh?: { faces: number; vertices: number; texture?: number; detail?: string; sizeBytes: number } | null
+  meshError?: string | null
   settings: {
     seed: number
     steps: number
@@ -128,6 +130,8 @@ export default function App() {
   const [polling, setPolling] = useState(false)
   const [viewerSrc, setViewerSrc] = useState('')
   const [previewKind, setPreviewKind] = useState<'splat' | 'mesh'>('splat')
+  const [meshDetail, setMeshDetail] = useState<'auto' | 'low' | 'medium' | 'high' | 'custom'>('auto')
+  const [meshFaces, setMeshFaces] = useState(10000)
   const [preparedSrc, setPreparedSrc] = useState('')
   // Room / scene mode is not offered in the app for now (CLI and Agent API only); flip this to bring the tab back.
   const [mode] = useState<Mode>('image')
@@ -286,7 +290,7 @@ export default function App() {
     }
   }
 
-  async function postJob(path: '/setup' | '/generate' | '/generate-scene', body: Record<string, unknown>) {
+  async function postJob(path: '/setup' | '/generate' | '/generate-scene' | '/mesh', body: Record<string, unknown>) {
     const response = await fetch(`${apiUrl}${path}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -322,9 +326,24 @@ export default function App() {
         steps,
         guidanceScale,
         numGaussians,
+        ...meshOptions(),
       })
     } catch (error) {
       setMessage(`Generation failed: ${formatError(error)}`)
+    }
+  }
+
+  function meshOptions() {
+    return meshDetail === 'custom' ? { meshFaces: Math.max(500, Math.round(meshFaces)) } : { meshDetail }
+  }
+
+  async function rebuildMesh() {
+    if (!generation?.paths?.ply) return
+    try {
+      await postJob('/mesh', { plyPath: generation.paths.ply, ...meshOptions() })
+      setPreviewKind('mesh')
+    } catch (error) {
+      setMessage(`Mesh failed: ${formatError(error)}`)
     }
   }
 
@@ -604,6 +623,28 @@ export default function App() {
             <input type="number" value={seed} onChange={(event) => setSeed(Number(event.target.value))} />
           </label>
           <label className="field compact">
+            <span>Mesh</span>
+            <select value={meshDetail} onChange={(event) => setMeshDetail(event.target.value as typeof meshDetail)}>
+              <option value="auto">Auto (fits the shape)</option>
+              <option value="low">Low poly (5k triangles)</option>
+              <option value="medium">Medium (25k)</option>
+              <option value="high">High (100k)</option>
+              <option value="custom">Custom…</option>
+            </select>
+          </label>
+          {meshDetail === 'custom' && (
+            <label className="field compact">
+              <span>Triangles</span>
+              <input type="number" min={500} step={500} value={meshFaces} onChange={(event) => setMeshFaces(Number(event.target.value))} />
+            </label>
+          )}
+          {generation?.paths?.ply && (
+            <button type="button" disabled={busy} onClick={rebuildMesh}>
+              <Box size={15} />
+              Rebuild mesh
+            </button>
+          )}
+          <label className="field compact">
             <span>Name</span>
             <input value={outputName} placeholder="Auto" onChange={(event) => setOutputName(event.target.value)} />
           </label>
@@ -694,6 +735,14 @@ export default function App() {
                     <dd>{fileName(generation.outputDir)}</dd>
                   </div>
                 </dl>
+                {generation.mesh && (
+                  <p className="mesh-note">
+                    Mesh: {generation.mesh.faces.toLocaleString()} triangles
+                    {generation.mesh.texture ? `, ${generation.mesh.texture}px texture` : ', vertex colours'},{' '}
+                    {(generation.mesh.sizeBytes / 1e6).toFixed(1)} MB
+                  </p>
+                )}
+                {generation.meshError && <p className="mesh-note">Mesh failed: {generation.meshError}</p>}
                 <div className="artifact-grid">
                   {Object.entries(generation.paths)
                     .filter(([key]) => key !== 'prepared')

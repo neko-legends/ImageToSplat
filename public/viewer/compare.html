@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Splat and mesh comparison</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #07090c; color: #eef2f4; font: 13px/1.4 system-ui, sans-serif; overflow: hidden; }
+  #bar { position: fixed; top: 12px; left: 12px; right: 12px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; z-index: 2; }
+  button, label.chk { background: #20242b; color: #eef2f4; border: 1px solid #414956; border-radius: 6px; padding: 7px 12px; cursor: pointer; font: inherit; }
+  button.active { border-color: #f0a43a; color: #f0a43a; }
+  label.chk { display: inline-flex; gap: 6px; align-items: center; }
+  #info { position: fixed; left: 12px; bottom: 12px; background: rgba(23, 25, 30, .85); border: 1px solid #414956; border-radius: 6px; padding: 8px 12px; z-index: 2; }
+  #info b { color: #f0a43a; }
+  #hint { position: fixed; right: 12px; bottom: 12px; color: #9aa5b1; z-index: 2; }
+</style>
+</head>
+<body>
+<div id="bar"></div>
+<div id="info">Loading…</div>
+<div id="hint">drag to orbit · scroll to zoom · keys 1-9 switch</div>
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdnjs.cloudflare.com/ajax/libs/three.js/0.180.0/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.180.0/examples/jsm/",
+    "@sparkjsdev/spark": "https://unpkg.com/@sparkjsdev/spark@2.0.0/dist/spark.module.js" } }
+</script>
+<script type="module">
+// compare.html?set=<manifest.json>: [{ "label": "Low poly", "url": "x.glb" }, { "label": "Splat", "url": "x.spz" }, ...]
+// Meshes (.glb) are y-up with the front on +z; single-image splats (.ply/.spz/.splat) are turned to match.
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { SparkRenderer, SplatMesh } from "@sparkjsdev/spark";
+
+const params = new URLSearchParams(location.search);
+const bar = document.getElementById("bar"), info = document.getElementById("info");
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.01, 1000);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(devicePixelRatio);
+renderer.setSize(innerWidth, innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+scene.add(new SparkRenderer({ renderer }));
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+
+const items = await (await fetch(params.get("set"))).json();
+let current = -1, wire = false, framed = false;
+const mb = (n) => (n / 1e6).toFixed(n < 1e6 ? 2 : 1) + " MB";
+
+function frame(box) {
+  if (framed) return;
+  framed = true;
+  const c = box.getCenter(new THREE.Vector3()), r = box.getSize(new THREE.Vector3()).length() / 2;
+  camera.position.copy(c).add(new THREE.Vector3(r * 1.1, r * 0.9, r * 2.8));
+  controls.target.copy(c);
+  window.meshBox = box;
+}
+
+async function load(item) {
+  const head = await fetch(item.url, { method: "HEAD" });
+  item.bytes = Number(head.headers.get("content-length") || 0);
+  if (/\.glb$/i.test(item.url)) {
+    const gltf = await new GLTFLoader().loadAsync(item.url);
+    item.object = gltf.scene;
+    item.triangles = 0;
+    gltf.scene.traverse((o) => {
+      if (!o.isMesh) return;
+      item.triangles += (o.geometry.index ? o.geometry.index.count : o.geometry.attributes.position.count) / 3;
+      item.material = o.material;
+      const map = o.material.map;
+      if (map) { item.texture = map.image.width; map.anisotropy = renderer.capabilities.getMaxAnisotropy(); }
+    });
+    frame(new THREE.Box3().setFromObject(gltf.scene));
+  } else {
+    const splat = new SplatMesh({ url: item.url });
+    await splat.initialized;
+    splat.rotation.y = Math.PI / 2;
+    const root = new THREE.Group();
+    root.rotation.x = Math.PI;
+    root.add(splat);
+    item.object = root;
+    item.splat = splat;
+    item.splats = splat.packedSplats?.numSplats ?? splat.numSplats;
+  }
+}
+
+function alignSplats() {  // put each splat where the meshes are (they stand on y = 0, centred)
+  if (!window.meshBox) return;
+  const target = window.meshBox.getCenter(new THREE.Vector3());
+  for (const it of items) {
+    if (!it.splat || it.aligned) continue;
+    const local = it.splat.getBoundingBox(true);
+    if (!local || local.isEmpty()) continue;
+    it.object.updateMatrixWorld(true);
+    const c = local.getCenter(new THREE.Vector3()).applyMatrix4(it.splat.matrixWorld);
+    it.object.position.add(target.clone().sub(c));
+    it.aligned = true;
+  }
+}
+
+function show(i) {
+  current = i;
+  items.forEach((it, k) => {
+    if (it.object) { if (k === i) scene.add(it.object); else scene.remove(it.object); }
+    it.button.classList.toggle("active", k === i);
+  });
+  const it = items[i];
+  info.innerHTML = it.object
+    ? `<b>${it.label}</b> &nbsp; ${it.triangles ? it.triangles.toLocaleString() + " triangles" + (it.texture ? `, ${it.texture}px texture` : ", vertex colours") : (it.splats ? it.splats.toLocaleString() + " splats" : "splat")} &nbsp;·&nbsp; ${mb(it.bytes)}`
+    : `<b>${it.label}</b> loading…`;
+}
+
+items.forEach((it, i) => {
+  it.button = document.createElement("button");
+  it.button.textContent = `${i + 1}  ${it.label}`;
+  it.button.onclick = () => show(i);
+  bar.appendChild(it.button);
+});
+const chk = document.createElement("label");
+chk.className = "chk";
+chk.innerHTML = '<input type="checkbox"> Wireframe (W)';
+const box = chk.querySelector("input");
+const setWire = (on) => { wire = box.checked = on; for (const it of items) if (it.material) it.material.wireframe = on; };
+box.onchange = () => setWire(box.checked);
+bar.appendChild(chk);
+addEventListener("keydown", (e) => {
+  const n = Number(e.key);
+  if (n >= 1 && n <= items.length) show(n - 1);
+  if (e.key.toLowerCase() === "w") setWire(!wire);
+});
+addEventListener("resize", () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+
+const start = Math.max(0, items.findIndex((it) => it.label === params.get("show")));
+show(start);
+await Promise.all(items.filter((it) => /\.glb$/i.test(it.url)).map(load));
+show(current);
+await Promise.all(items.filter((it) => !it.object).map(load));
+alignSplats();
+show(current);
+window.compareReady = true;
+window.showItem = (label) => show(items.findIndex((it) => it.label === label));
+window.setWire = setWire;
+</script>
+</body>
+</html>

@@ -10,3 +10,4 @@ scikit-image
 trimesh
 xatlas
 fast-simplification
+scipy

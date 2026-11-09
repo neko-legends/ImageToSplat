@@ -49,7 +49,7 @@ def check() -> dict:
     except Exception as exc:
         report["ffmpeg"] = None
         report["ffmpegError"] = str(exc)
-    for mod in ("pycolmap", "torch", "gsplat", "mapanything", "skimage", "trimesh"):
+    for mod in ("pycolmap", "torch", "gsplat", "mapanything", "skimage", "trimesh", "xatlas", "fast_simplification", "scipy"):
         try:
             m = __import__(mod)
             report[mod] = getattr(m, "__version__", "installed")
@@ -87,9 +87,12 @@ def main() -> int:
     mesh.add_argument("--mesh-up", default="-y", choices=["y", "-y", "z", "-z"], help="Up axis of the splat (TripoSplat: -y)")
     mesh.add_argument("--mesh-yaw", type=float, default=-90.0,
                       help="Turn about the up axis (degrees) so the front faces +z (TripoSplat: -90)")
-    mesh.add_argument("--mesh-texture", type=int, default=2048,
-                      help="Baked JPEG texture size on a simplified mesh; 0 = full mesh with a colour per vertex")
-    mesh.add_argument("--mesh-faces", type=int, default=0, help="Simplify to about this many triangles (0 = textured: 100k, vertex colours: keep all)")
+    mesh.add_argument("--mesh-detail", default="high", choices=["low", "medium", "high", "auto"],
+                      help="low 5k triangles + 1024 texture, medium 25k + 2048, high 100k + 2048, "
+                           "auto = fewest triangles that keep the shape")
+    mesh.add_argument("--mesh-faces", type=int, default=0, help="Exact triangle target instead of the preset's")
+    mesh.add_argument("--mesh-texture", type=int, default=None,
+                      help="Texture size instead of the preset's; 0 = colour per vertex, no texture")
     mesh.add_argument("--mesh-grid", type=int, default=256, help="Volume resolution; higher = finer detail and bigger file")
     cap = ap.add_argument_group("Venice capture (instead of --video): needs Venice Media Local with Agent Control on; "
                                 "token from VENICE_MEDIA_LOCAL_TOKEN or ~/.config/venice-media-local/agent.json")
@@ -110,7 +113,7 @@ def main() -> int:
 
             ply = Path(a.mesh).expanduser().resolve()
             out = Path(a.mesh_out).expanduser().resolve() if a.mesh_out else ply.with_name(ply.stem.removesuffix("_native").removesuffix(".scene") + "_mesh.glb")
-            emit(event="result", **mesh_from_file(ply, out, up=a.mesh_up, yaw=a.mesh_yaw, grid=a.mesh_grid, texture=a.mesh_texture, faces=a.mesh_faces, device=a.device,
+            emit(event="result", **mesh_from_file(ply, out, up=a.mesh_up, yaw=a.mesh_yaw, grid=a.mesh_grid, detail=a.mesh_detail, texture=a.mesh_texture, faces=a.mesh_faces, device=a.device,
                                                  progress=lambda msg, frac=None: emit(event="progress", message=msg, progress=frac)))
             return 0
         except Exception as exc:

@@ -68,7 +68,7 @@ TripoSplat `.safetensors` files, and these exports:
 |---|---|---|
 | `<name>.spz` | compressed splat (Spark, three.js) | 3.8 MB |
 | `<name>_native.ply`, `.splat` | splat in the standard formats | 17.8 MB, 8.4 MB |
-| `<name>_mesh.glb` | **real textured mesh**: 100k triangles + 2048×2048 JPEG texture | 4.0 MB |
+| `<name>_mesh.glb` | **real textured mesh**, detail of your choice (see below) | 0.5-4.1 MB |
 | `<name>_point_cloud.glb/.obj/.fbx`, glTF `.zip` | splat centres as a coloured point cloud | 4-17 MB |
 
 The preview switches between **Splat** and **Mesh (.glb)**.
@@ -82,25 +82,42 @@ that Blender, game engines and three.js (`GLTFLoader`) open like any model:
 
 1. the splat is rendered (colour and depth) from 128 directions around the object;
 2. the depth maps are fused into a signed-distance volume (TSDF, 256³), with the silhouettes carving away empty space;
-3. marching cubes extracts the surface, small floating pieces are dropped, and the mesh is simplified to 100k
-   triangles;
-4. xatlas unwraps it, and every texel of a 2048×2048 texture takes the colour of the 1024 px splat renders that see
-   its surface point most head-on.
+3. marching cubes extracts the surface, small floating pieces are dropped, and the mesh is simplified to the
+   chosen triangle count;
+4. xatlas unwraps it, and every texel of the texture is moved onto the full-detail surface and takes the colour of
+   the 1024 px splat renders that see that point most head-on, so a low-poly mesh keeps the texture detail.
+
+Mesh detail (the **Mesh** setting in the app, `meshDetail` in the API, `--mesh-detail` on the command line):
+
+| Detail | Triangles | Texture | Chest `.glb` |
+|---|---|---|---|
+| `low` | 5,000 | 1024 px | 0.5 MB |
+| `medium` | 25,000 | 2048 px | 1.9 MB |
+| `high` | 100,000 | 2048 px | 4.1 MB |
+| `auto` (default) | the fewest of 3k-100k that keep 95 % of the surface within 0.3 % of the object's size | 2048 px | 1.9 MB (picked 25k) |
+| custom | `meshFaces` / `--mesh-faces N` | 2048 px | 10k: 1.4 MB |
+
+**Rebuild mesh** in the app (or `POST /mesh` with `meshDetail` or `meshFaces`, optional `plyPath` and
+`outputPath`) makes the mesh again from the existing splat in 5-45 s without generating again.
+`public/viewer/compare.html?set=<list.json>` switches between a splat and several meshes with the same camera
+(`[{"label": "Low", "url": "chest_low.glb"}, {"label": "Splat", "url": "chest.spz"}]`), with a wireframe toggle.
 
 The `.glb` is y-up, stands on y = 0 with its front facing +z, and uses an unlit material (`KHR_materials_unlit`):
 the texture already contains the shading and highlights of the source image, so lighting it again would wash it
-out. About 40 s per object. The texture keeps more detail than a colour per vertex at less than half the size
-(left: 514k triangles with vertex colours, 10 MB; right: textured, 4 MB):
+out. The texture keeps more detail than a colour per vertex at less than half the size (left: 514k triangles with
+vertex colours, 10 MB; right: 100k triangles textured, 4 MB):
 
 ![Close-up: vertex colours vs texture](static/doc/chest_mesh_closeup.webp)
 
 It needs the scene worker packages (see [Scene requirements](#scene-requirements)); without them the job still
-finishes and reports `meshError`. API options: `"mesh": false` to skip it, `"meshTexture": 4096` for a bigger
+finishes and reports `meshError`. Other API options: `"mesh": false` to skip it, `"meshTexture": 4096` for a bigger
 texture, `0` for the full-resolution mesh with vertex colours; `--no-mesh` on the command line. Convert any splat
 yourself:
 
 ```bash
-python -m scene_splat --mesh chest_native.ply                     # -> chest_mesh.glb (textured)
+python -m scene_splat --mesh chest_native.ply                     # -> chest_mesh.glb (high: 100k triangles)
+python -m scene_splat --mesh chest_native.ply --mesh-detail low    # 5k triangles, 1024 texture
+python -m scene_splat --mesh chest_native.ply --mesh-faces 12000   # exact triangle count
 python -m scene_splat --mesh chest_native.ply --mesh-texture 0     # vertex colours, no simplification
 python -m scene_splat --mesh scene.spz --mesh-up y --mesh-yaw 0    # a .spz that is already y-up
 ```
